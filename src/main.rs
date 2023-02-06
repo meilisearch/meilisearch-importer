@@ -9,6 +9,7 @@ use structopt::StructOpt;
 
 ///
 /// An application that chunck the incoming file in packet of 10Mb and send them to a Meilisearch.
+///
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -23,7 +24,7 @@ struct Opt {
     token: String,
 
     #[structopt(parse(from_os_str))]
-    file: PathBuf,
+    files: Vec<PathBuf>,
 }
 
 enum Mime {
@@ -146,33 +147,47 @@ async fn send_data(
         .body(data.to_vec())
         .send()
         .await?;
+
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
-    let mime = Mime::from_path(&opt.file).expect("Could not find the mime type");
-    let file_size = fs::metadata(&opt.file)?.len();
-    let size = 9 * 1024 * 1024;
-    let nb_chunks = file_size / size as u64;
-    let pb = ProgressBar::new(nb_chunks);
-    match mime {
-        Mime::Json => unimplemented!(),
-        Mime::NdJson => {
-            let chunker = NdJsonChunker::new(opt.file, size);
-            for chunk in chunker {
-                send_data(&opt.url, &opt.token, &mime, &chunk).await?;
-                pb.inc(1);
-            }
+
+    // for each files present in the argument
+    for file in opt.files {
+        // check if the file exists
+        if !file.exists() {
+            return Err(format!("The file {:?} does not exist", file).into());
         }
-        Mime::Csv => {
-            let chunker = CsvChunker::new(opt.file, size);
-            for chunk in chunker {
-                send_data(&opt.url, &opt.token, &mime, &chunk).await?;
-                pb.inc(1);
+
+        let mime = Mime::from_path(&file).expect("Could not find the mime type");
+        let file_size = fs::metadata(&file)?.len();
+        let size = 9 * 1024 * 1024;
+        let nb_chunks = file_size / size as u64;
+        let pb = ProgressBar::new(nb_chunks);
+        match mime {
+            Mime::Json => {
+                // convert the file into a string
+                let data = fs::read_to_string(file)?;
+                send_data(&opt.url, &opt.token, &mime, data.as_bytes()).await?;
             }
-        }
-    };
+            Mime::NdJson => {
+                let chunker = NdJsonChunker::new(file, size);
+                for chunk in chunker {
+                    send_data(&opt.url, &opt.token, &mime, &chunk).await?;
+                    pb.inc(1);
+                }
+            }
+            Mime::Csv => {
+                let chunker = CsvChunker::new(file, size);
+                for chunk in chunker {
+                    send_data(&opt.url, &opt.token, &mime, &chunk).await?;
+                    pb.inc(1);
+                }
+            }
+        };
+    }
     Ok(())
 }
