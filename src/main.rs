@@ -37,11 +37,12 @@ impl Mime {
     fn from_path(path: &PathBuf) -> Option<Mime> {
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("json") => Some(Mime::Json),
-            Some("ndjson") => Some(Mime::NdJson),
+            Some("ndjson" | "jsonl") => Some(Mime::NdJson),
             Some("csv") => Some(Mime::Csv),
             _ => None,
         }
     }
+
     fn as_str(&self) -> &str {
         match self {
             Mime::Json => "application/json",
@@ -164,12 +165,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let mime = Mime::from_path(&file).expect("Could not find the mime type");
         let file_size = fs::metadata(&file)?.len();
-        let size = 9 * 1024 * 1024;
+        let size = 90 * 1024 * 1024;
         let nb_chunks = file_size / size as u64;
         let pb = ProgressBar::new(nb_chunks);
         match mime {
             Mime::Json => {
-                // convert the file into a string
                 let data = fs::read_to_string(file)?;
                 send_data(&opt.url, &opt.token, &mime, data.as_bytes()).await?;
             }
