@@ -1,3 +1,4 @@
+use byte_unit::{Byte, ByteError};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indicatif::ProgressBar;
@@ -26,6 +27,10 @@ struct Opt {
 
     #[structopt(parse(from_os_str))]
     files: Vec<PathBuf>,
+
+    // Get the batch size in bytes
+    #[structopt(long, default_value = "90 MB", parse(try_from_str = Byte::from_str))]
+    batch_size: Byte,
 }
 
 enum Mime {
@@ -155,13 +160,14 @@ async fn send_data(
         .body(data.to_vec())
         .send()
         .await?;
-    print!("{:?}", result);
+    // print!("{:?}", result);
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
+    println!("{:?}", opt);
 
     // for each files present in the argument
     for file in opt.files {
@@ -172,7 +178,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let mime = Mime::from_path(&file).expect("Could not find the mime type");
         let file_size = fs::metadata(&file)?.len();
-        let size = 90 * 1024 * 1024;
+        let size = opt.batch_size.get_bytes() as usize;
         let nb_chunks = file_size / size as u64;
         let pb = ProgressBar::new(nb_chunks);
         match mime {
