@@ -1,12 +1,13 @@
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use indicatif::ProgressBar;
 use std::{
     error::Error,
     fs::{self, File},
-    io::{self, BufRead},
+    io::{self, prelude::*, BufRead},
     path::PathBuf,
 };
 use structopt::StructOpt;
-
 ///
 /// An application that chunck the incoming file in packet of 10Mb and send them to a Meilisearch.
 ///
@@ -141,14 +142,20 @@ async fn send_data(
     data: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    client
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    let data = encoder.finish()?;
+
+    let result = client
         .post(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Content-Type", mime.as_str())
+        .header("Content-Encoding", "gzip")
         .body(data.to_vec())
         .send()
         .await?;
-
+    print!("{:?}", result);
     Ok(())
 }
 
