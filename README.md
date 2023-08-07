@@ -3,7 +3,7 @@
 A CLI to import massive CSV, NdJson or JSON (array of objects) into Meilisearch the most efficient way.
 
 ```
-cargo run --release -- --url "/indexes/xxx/documents"  --token "xxx" xxx.csv
+cargo run --release -- --url 'https://ms-************.sfo.meilisearch.io' --index crunchbase --primary-key uuid --token 8************ --files ./dataset/organizations.csv --batch-size 20MB
 ```
 
 ## Options
