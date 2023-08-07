@@ -1,4 +1,4 @@
-use byte_unit::{Byte, ByteError};
+use byte_unit::Byte;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indicatif::ProgressBar;
@@ -13,7 +13,7 @@ use structopt::StructOpt;
 /// An application that chunck the incoming file in packet of 10Mb and send them to a Meilisearch.
 ///
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Clone)]
 #[structopt(
     name = "importer",
     about = "Could import any kind of data into Meilisearch"
@@ -23,9 +23,15 @@ struct Opt {
     url: String,
 
     #[structopt(long)]
+    index: String,
+
+    #[structopt(long)]
+    primary_key: Option<String>,
+
+    #[structopt(long)]
     token: String,
 
-    #[structopt(parse(from_os_str))]
+    #[structopt(long, parse(from_os_str))]
     files: Vec<PathBuf>,
 
     // Get the batch size in bytes
@@ -140,13 +146,13 @@ impl Iterator for CsvChunker {
     }
 }
 
-async fn send_data(
-    url: &str,
-    token: &str,
-    mime: &Mime,
-    data: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn send_data(opt: Opt, mime: &Mime, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
+    let token = opt.token.clone();
+    let mut url = format!("{}/indexes/{}/documents", opt.url, opt.index);
+    if let Some(primary_key) = &opt.primary_key {
+        url = format!("{}?primaryKey={}", url, primary_key);
+    }
 
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data)?;
@@ -160,17 +166,20 @@ async fn send_data(
         .body(data.to_vec())
         .send()
         .await?;
-    // print!("{:?}", result);
+
+    if !result.status().is_success() {
+        result.text().await?;
+    }
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::from_args();
-    println!("{:?}", opt);
+    let files = opt.files.clone();
 
     // for each files present in the argument
-    for file in opt.files {
+    for file in files {
         // check if the file exists
         if !file.exists() {
             return Err(format!("The file {:?} does not exist", file).into());
@@ -184,19 +193,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match mime {
             Mime::Json => {
                 let data = fs::read_to_string(file)?;
-                send_data(&opt.url, &opt.token, &mime, data.as_bytes()).await?;
+                send_data(opt.clone(), &mime, data.as_bytes()).await?;
             }
             Mime::NdJson => {
                 let chunker = NdJsonChunker::new(file, size);
                 for chunk in chunker {
-                    send_data(&opt.url, &opt.token, &mime, &chunk).await?;
+                    send_data(opt.clone(), &mime, &chunk).await?;
                     pb.inc(1);
                 }
             }
             Mime::Csv => {
                 let chunker = CsvChunker::new(file, size);
                 for chunk in chunker {
-                    send_data(&opt.url, &opt.token, &mime, &chunk).await?;
+                    send_data(opt.clone(), &mime, &chunk).await?;
                     pb.inc(1);
                 }
             }
