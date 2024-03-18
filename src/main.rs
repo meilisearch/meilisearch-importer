@@ -1,9 +1,10 @@
+use byte_count::ByteCount;
 use byte_unit::Byte;
 use csv::ByteRecord;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indicatif::ProgressBar;
-use serde_json::{de::IoRead, Deserializer, Map, StreamDeserializer, Value};
+use serde_json::{de::IoRead, to_writer, Deserializer, Map, StreamDeserializer, Value};
 use std::{
     error::Error,
     fs::{self, File},
@@ -14,6 +15,8 @@ use std::{
 use structopt::StructOpt;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Retry;
+
+mod byte_count;
 
 ///
 /// An application that chunck the incoming file in packet of 10Mb and send them to a Meilisearch.
@@ -93,10 +96,19 @@ impl Iterator for NdJsonChunker {
     fn next(&mut self) -> Option<Self::Item> {
         for result in self.reader.by_ref() {
             let object = result.unwrap();
-            serde_json::to_writer(&mut self.buffer, &object).unwrap();
-            if self.buffer.len() >= self.size {
+
+            // Evaluate the size it will take if we serialize it in the buffer
+            let mut counter = ByteCount::new();
+            to_writer(&mut counter, &object).unwrap();
+
+            if self.buffer.len() + counter.count() >= self.size {
                 let buffer = mem::take(&mut self.buffer);
+                // Insert the record but after we sent the buffer
+                to_writer(&mut self.buffer, &object).unwrap();
                 return Some(buffer);
+            } else {
+                // Insert the record
+                to_writer(&mut self.buffer, &object).unwrap();
             }
         }
         if self.buffer.is_empty() {
@@ -109,7 +121,7 @@ impl Iterator for NdJsonChunker {
 
 struct CsvChunker {
     reader: csv::Reader<File>,
-    header: ByteRecord,
+    headers: ByteRecord,
     buffer: Vec<u8>,
     record: ByteRecord,
     size: usize,
@@ -119,12 +131,12 @@ impl CsvChunker {
     fn new(file: PathBuf, size: usize) -> Self {
         let mut reader = csv::Reader::from_path(file).unwrap();
         let mut buffer = Vec::new();
-        let header = reader.byte_headers().unwrap().clone();
-        buffer.extend_from_slice(header.as_slice());
+        let headers = reader.byte_headers().unwrap().clone();
+        buffer.extend_from_slice(headers.as_slice());
         buffer.push(b'\n');
         Self {
             reader,
-            header,
+            headers,
             buffer,
             record: ByteRecord::new(),
             size,
@@ -137,16 +149,25 @@ impl Iterator for CsvChunker {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.reader.read_byte_record(&mut self.record).unwrap() {
-            self.buffer.extend_from_slice(self.record.as_slice());
-            self.buffer.push(b'\n');
-            if self.buffer.len() >= self.size {
+            if self.buffer.len() + self.record.len() >= self.size {
                 let buffer = mem::take(&mut self.buffer);
-                self.buffer.extend_from_slice(self.header.as_slice());
+
+                // Insert the header and out of bound record
+                self.buffer.extend_from_slice(self.headers.as_slice());
                 self.buffer.push(b'\n');
+                self.buffer.extend_from_slice(self.record.as_slice());
+                self.buffer.push(b'\n');
+
                 return Some(buffer);
+            } else {
+                // Insert only the record
+                self.buffer.extend_from_slice(self.record.as_slice());
+                self.buffer.push(b'\n');
             }
         }
-        if self.buffer.len() == self.reader.headers().unwrap().len() + 1 {
+        // If there only is the headers in the buffer and a newline
+        // character it means that there are no documents in it.
+        if self.buffer.len() == self.headers.len() + 1 {
             None
         } else {
             Some(mem::take(&mut self.buffer))
