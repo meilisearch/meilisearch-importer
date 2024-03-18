@@ -1,14 +1,20 @@
 use byte_unit::Byte;
+use csv::ByteRecord;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indicatif::ProgressBar;
+use serde_json::{de::IoRead, Deserializer, Map, StreamDeserializer, Value};
 use std::{
     error::Error,
     fs::{self, File},
-    io::{self, prelude::*, BufRead},
-    path::PathBuf,
+    io::{self, prelude::*},
+    mem,
+    path::{Path, PathBuf},
 };
 use structopt::StructOpt;
+use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::Retry;
+
 ///
 /// An application that chunck the incoming file in packet of 10Mb and send them to a Meilisearch.
 ///
@@ -46,7 +52,7 @@ enum Mime {
 }
 
 impl Mime {
-    fn from_path(path: &PathBuf) -> Option<Mime> {
+    fn from_path(path: &Path) -> Option<Mime> {
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("json") => Some(Mime::Json),
             Some("ndjson" | "jsonl") => Some(Mime::NdJson),
@@ -65,7 +71,7 @@ impl Mime {
 }
 
 struct NdJsonChunker {
-    reader: io::BufReader<File>,
+    reader: StreamDeserializer<'static, IoRead<io::BufReader<File>>, Map<String, Value>>,
     buffer: Vec<u8>,
     size: usize,
 }
@@ -74,7 +80,7 @@ impl NdJsonChunker {
     fn new(file: PathBuf, size: usize) -> Self {
         let reader = io::BufReader::new(File::open(file).unwrap());
         Self {
-            reader,
+            reader: Deserializer::from_reader(reader).into_iter(),
             buffer: Vec::new(),
             size,
         }
@@ -85,41 +91,43 @@ impl Iterator for NdJsonChunker {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut line = String::new();
-        while let Ok(len) = self.reader.read_line(&mut line) {
-            if len == 0 {
-                return None;
-            }
-            if self.buffer.len() + len > self.size {
-                let buffer = std::mem::replace(&mut self.buffer, Vec::new());
+        for result in self.reader.by_ref() {
+            let object = result.unwrap();
+            serde_json::to_writer(&mut self.buffer, &object).unwrap();
+            if self.buffer.len() >= self.size {
+                let buffer = mem::take(&mut self.buffer);
                 return Some(buffer);
-            } else {
-                self.buffer.extend("\n".as_bytes());
-                self.buffer.extend(line.as_bytes());
-                line.clear();
             }
         }
-        None
+        if self.buffer.is_empty() {
+            None
+        } else {
+            Some(mem::take(&mut self.buffer))
+        }
     }
 }
 
 struct CsvChunker {
-    reader: io::BufReader<File>,
+    reader: csv::Reader<File>,
+    header: ByteRecord,
     buffer: Vec<u8>,
+    record: ByteRecord,
     size: usize,
-    headers: Vec<u8>,
 }
 
 impl CsvChunker {
     fn new(file: PathBuf, size: usize) -> Self {
-        let mut reader = io::BufReader::new(File::open(file).unwrap());
-        let mut headers = String::new();
-        reader.read_line(&mut headers).unwrap();
+        let mut reader = csv::Reader::from_path(file).unwrap();
+        let mut buffer = Vec::new();
+        let header = reader.byte_headers().unwrap().clone();
+        buffer.extend_from_slice(header.as_slice());
+        buffer.push(b'\n');
         Self {
             reader,
-            buffer: Vec::new(),
+            header,
+            buffer,
+            record: ByteRecord::new(),
             size,
-            headers: headers.into_bytes(),
         }
     }
 }
@@ -128,25 +136,25 @@ impl Iterator for CsvChunker {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut line = String::new();
-        while let Ok(len) = self.reader.read_line(&mut line) {
-            if len == 0 {
-                return None;
-            }
-            if self.buffer.len() + len > self.size {
-                let buffer = std::mem::replace(&mut self.buffer, self.headers.clone());
+        while self.reader.read_byte_record(&mut self.record).unwrap() {
+            self.buffer.extend_from_slice(self.record.as_slice());
+            self.buffer.push(b'\n');
+            if self.buffer.len() >= self.size {
+                let buffer = mem::take(&mut self.buffer);
+                self.buffer.extend_from_slice(self.header.as_slice());
+                self.buffer.push(b'\n');
                 return Some(buffer);
-            } else {
-                self.buffer.extend("\n".as_bytes());
-                self.buffer.extend(line.as_bytes());
-                line.clear();
             }
         }
-        None
+        if self.buffer.len() == self.reader.headers().unwrap().len() + 1 {
+            None
+        } else {
+            Some(mem::take(&mut self.buffer))
+        }
     }
 }
 
-async fn send_data(opt: Opt, mime: &Mime, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+async fn send_data(opt: &Opt, mime: &Mime, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let token = opt.token.clone();
     let mut url = format!("{}/indexes/{}/documents", opt.url, opt.index);
@@ -168,7 +176,8 @@ async fn send_data(opt: Opt, mime: &Mime, data: &[u8]) -> Result<(), Box<dyn std
         .await?;
 
     if !result.status().is_success() {
-        result.text().await?;
+        let text = result.text().await?;
+        return Err(text.into());
     }
     Ok(())
 }
@@ -189,23 +198,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let file_size = fs::metadata(&file)?.len();
         let size = opt.batch_size.get_bytes() as usize;
         let nb_chunks = file_size / size as u64;
+        let retry_strategy = ExponentialBackoff::from_millis(10).map(jitter).take(100);
         let pb = ProgressBar::new(nb_chunks);
+        pb.inc(0);
+
         match mime {
             Mime::Json => {
                 let data = fs::read_to_string(file)?;
-                send_data(opt.clone(), &mime, data.as_bytes()).await?;
+                Retry::spawn(retry_strategy.clone(), || {
+                    send_data(&opt, &mime, data.as_bytes())
+                })
+                .await?;
             }
             Mime::NdJson => {
-                let chunker = NdJsonChunker::new(file, size);
-                for chunk in chunker {
-                    send_data(opt.clone(), &mime, &chunk).await?;
+                for chunk in NdJsonChunker::new(file, size) {
+                    Retry::spawn(retry_strategy.clone(), || send_data(&opt, &mime, &chunk)).await?;
                     pb.inc(1);
                 }
             }
             Mime::Csv => {
-                let chunker = CsvChunker::new(file, size);
-                for chunk in chunker {
-                    send_data(opt.clone(), &mime, &chunk).await?;
+                for chunk in CsvChunker::new(file, size) {
+                    Retry::spawn(retry_strategy.clone(), || send_data(&opt, &mime, &chunk)).await?;
                     pb.inc(1);
                 }
             }
