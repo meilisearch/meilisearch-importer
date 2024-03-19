@@ -165,11 +165,13 @@ impl Iterator for CsvChunker {
                 self.buffer.push(b'\n');
             }
         }
-        // If there only is the headers in the buffer and a newline
-        // character it means that there are no documents in it.
-        if self.buffer.len() == self.headers.len() + 1 {
+        // If there only less than or the headers in the buffer and a
+        // newline character it means that there are no documents in it.
+        if self.buffer.len() <= self.headers.len() + 1 {
             None
         } else {
+            // We make the buffer empty by doing that and next time we will
+            // come back to this _if else_ condition to then return None.
             Some(mem::take(&mut self.buffer))
         }
     }
