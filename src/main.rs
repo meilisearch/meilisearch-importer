@@ -44,7 +44,7 @@ struct Opt {
     files: Vec<PathBuf>,
 
     // Get the batch size in bytes
-    #[structopt(long, default_value = "90 MB", parse(try_from_str = Byte::from_str))]
+    #[structopt(long, default_value = "90 MB")]
     batch_size: Byte,
 }
 
@@ -219,7 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let mime = Mime::from_path(&file).expect("Could not find the mime type");
         let file_size = fs::metadata(&file)?.len();
-        let size = opt.batch_size.get_bytes() as usize;
+        let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
         let retry_strategy = ExponentialBackoff::from_millis(10).map(jitter).take(100);
         let pb = ProgressBar::new(nb_chunks);
