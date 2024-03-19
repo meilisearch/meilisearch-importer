@@ -44,7 +44,7 @@ struct Opt {
     files: Vec<PathBuf>,
 
     // Get the batch size in bytes
-    #[structopt(long, default_value = "90 MB", parse(try_from_str = Byte::from_str))]
+    #[structopt(long, default_value = "90 MB")]
     batch_size: Byte,
 }
 
@@ -165,11 +165,13 @@ impl Iterator for CsvChunker {
                 self.buffer.push(b'\n');
             }
         }
-        // If there only is the headers in the buffer and a newline
-        // character it means that there are no documents in it.
-        if self.buffer.len() == self.headers.len() + 1 {
+        // If there only less than or the headers in the buffer and a
+        // newline character it means that there are no documents in it.
+        if self.buffer.len() <= self.headers.len() + 1 {
             None
         } else {
+            // We make the buffer empty by doing that and next time we will
+            // come back to this _if else_ condition to then return None.
             Some(mem::take(&mut self.buffer))
         }
     }
@@ -217,7 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let mime = Mime::from_path(&file).expect("Could not find the mime type");
         let file_size = fs::metadata(&file)?.len();
-        let size = opt.batch_size.get_bytes() as usize;
+        let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
         let retry_strategy = ExponentialBackoff::from_millis(10).map(jitter).take(100);
         let pb = ProgressBar::new(nb_chunks);
@@ -226,20 +228,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match mime {
             Mime::Json => {
                 let data = fs::read_to_string(file)?;
-                Retry::spawn(retry_strategy.clone(), || {
+                Retry::spawn(retry_strategy.clone(), || async {
                     send_data(&opt, &mime, data.as_bytes())
+                        .await
+                        .inspect_err(|e| pb.println(e.to_string()))
                 })
                 .await?;
             }
             Mime::NdJson => {
                 for chunk in NdJsonChunker::new(file, size) {
-                    Retry::spawn(retry_strategy.clone(), || send_data(&opt, &mime, &chunk)).await?;
+                    Retry::spawn(retry_strategy.clone(), || async {
+                        send_data(&opt, &mime, &chunk)
+                            .await
+                            .inspect_err(|e| pb.println(e.to_string()))
+                    })
+                    .await?;
                     pb.inc(1);
                 }
             }
             Mime::Csv => {
                 for chunk in CsvChunker::new(file, size) {
-                    Retry::spawn(retry_strategy.clone(), || send_data(&opt, &mime, &chunk)).await?;
+                    Retry::spawn(retry_strategy.clone(), || async {
+                        send_data(&opt, &mime, &chunk)
+                            .await
+                            .inspect_err(|e| pb.println(e.to_string()))
+                    })
+                    .await?;
                     pb.inc(1);
                 }
             }
