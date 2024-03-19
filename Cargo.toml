@@ -8,7 +8,7 @@ byte-unit = { version = "4.0.14", default-features = false, features = ["std", "
 csv = "1.1.6"
 flate2 = "1.0"
 indicatif = "0.17.1"
-reqwest = "0.11.12"
+reqwest = { version = "0.11.12", default-features = false, features = ["rustls-tls"] }
 serde_json = { version = "1.0.114", features = ["preserve_order"] }
 structopt = "0.3.26"
 tokio = { version = "1.21.2", features = ["full"] }
