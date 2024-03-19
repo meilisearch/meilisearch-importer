@@ -228,20 +228,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         match mime {
             Mime::Json => {
                 let data = fs::read_to_string(file)?;
-                Retry::spawn(retry_strategy.clone(), || {
+                Retry::spawn(retry_strategy.clone(), || async {
                     send_data(&opt, &mime, data.as_bytes())
+                        .await
+                        .inspect_err(|e| pb.println(e.to_string()))
                 })
                 .await?;
             }
             Mime::NdJson => {
                 for chunk in NdJsonChunker::new(file, size) {
-                    Retry::spawn(retry_strategy.clone(), || send_data(&opt, &mime, &chunk)).await?;
+                    Retry::spawn(retry_strategy.clone(), || async {
+                        send_data(&opt, &mime, &chunk)
+                            .await
+                            .inspect_err(|e| pb.println(e.to_string()))
+                    })
+                    .await?;
                     pb.inc(1);
                 }
             }
             Mime::Csv => {
                 for chunk in CsvChunker::new(file, size) {
-                    Retry::spawn(retry_strategy.clone(), || send_data(&opt, &mime, &chunk)).await?;
+                    Retry::spawn(retry_strategy.clone(), || async {
+                        send_data(&opt, &mime, &chunk)
+                            .await
+                            .inspect_err(|e| pb.println(e.to_string()))
+                    })
+                    .await?;
                     pb.inc(1);
                 }
             }
