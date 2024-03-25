@@ -28,7 +28,7 @@ meilisearch-importer \
     --url 'https://ms-************.sfo.meilisearch.io'
     --index crunchbase \
     --primary-key uuid \
-    --token 'D2jkS***************' \
+    --api-key 'D2jkS***************' \
     --files ./dataset/organizations.csv
 ```
 
