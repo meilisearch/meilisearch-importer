@@ -18,27 +18,37 @@ mod csv;
 mod mime;
 mod nd_json;
 
-/// An application that chunks the file content to send them to Meilisearch.
+/// An tool to send files in chunks (or batches) to a Meilisearch instance.
 #[derive(Debug, StructOpt, Clone)]
 #[structopt(name = "importer")]
 struct Opt {
+    /// The URL of your instance. You can find it on the main project page on the Cloud.
+    /// It looks like the following:
+    ///
+    /// https://ms-************.sfo.meilisearch.io
     #[structopt(long)]
     url: String,
 
+    /// The index name you want to send your documents in.
     #[structopt(long)]
     index: String,
 
+    /// The name of the field that must be used by Meilisearch to uniquely identify your documents.
+    /// If not specified here, Meilisearch will try it's best to guess it.
     #[structopt(long)]
     primary_key: Option<String>,
 
+    /// The API key to access Meilisearch. This API key must have the `documents.add` right.
+    /// The Master Key and the Default Admin API Key can be used to send documents.
     #[structopt(long)]
-    token: String,
+    api_key: Option<String>,
 
+    /// A list of file paths that are streamed and sent to Meilisearch in batches.
     #[structopt(long, parse(from_os_str))]
     files: Vec<PathBuf>,
 
-    // Get the batch size in bytes
-    #[structopt(long, default_value = "90 MB")]
+    /// The size of the batches sent to Meilisearch.
+    #[structopt(long, default_value = "20 MB")]
     batch_size: Byte,
 }
 
@@ -49,7 +59,7 @@ fn send_data(
     mime: &Mime,
     data: &[u8],
 ) -> anyhow::Result<()> {
-    let token = opt.token.clone();
+    let api_key = opt.api_key.clone();
     let mut url = format!("{}/indexes/{}/documents", opt.url, opt.index);
     if let Some(primary_key) = &opt.primary_key {
         url = format!("{}?primaryKey={}", url, primary_key);
@@ -65,14 +75,15 @@ fn send_data(
     let backoff = Backoff::new(retries, min, max);
 
     for (attempt, duration) in backoff.into_iter().enumerate() {
-        let result = agent
-            .post(&url)
-            .set("Authorization", &format!("Bearer {}", token))
-            .set("Content-Type", mime.as_str())
-            .set("Content-Encoding", "gzip")
-            .send_bytes(&data);
+        let mut request = agent.post(&url);
+        request = request.set("Content-Type", mime.as_str());
+        request = request.set("Content-Encoding", "gzip");
 
-        match result {
+        if let Some(api_key) = &api_key {
+            request = request.set("Authorization", &format!("Bearer {}", api_key));
+        }
+
+        match request.send_bytes(&data) {
             Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
             Ok(response) => {
                 let e = response.into_string()?;
