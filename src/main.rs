@@ -5,12 +5,12 @@ use std::{fs, thread};
 
 use anyhow::Context;
 use byte_unit::Byte;
+use clap::Parser;
 use exponential_backoff::Backoff;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indicatif::ProgressBar;
 use mime::Mime;
-use structopt::StructOpt;
 use ureq::{Agent, AgentBuilder};
 
 mod byte_count;
@@ -18,9 +18,9 @@ mod csv;
 mod mime;
 mod nd_json;
 
-/// An tool to send files in chunks (or batches) to a Meilisearch instance.
-#[derive(Debug, StructOpt, Clone)]
-#[structopt(name = "importer")]
+/// A tool to import massive datasets into Meilisearch by sending them in batches.
+#[derive(Debug, Parser, Clone)]
+#[command(name = "meilisearch-importer")]
 struct Opt {
     /// The URL of your instance. You can find it on the main project page on the Cloud.
     /// It looks like the following:
@@ -44,11 +44,11 @@ struct Opt {
     api_key: Option<String>,
 
     /// A list of file paths that are streamed and sent to Meilisearch in batches.
-    #[structopt(long, parse(from_os_str))]
+    #[structopt(long)]
     files: Vec<PathBuf>,
 
     /// The size of the batches sent to Meilisearch.
-    #[structopt(long, default_value = "20 MB")]
+    #[structopt(long, default_value = "20 MiB")]
     batch_size: Byte,
 }
 
@@ -101,7 +101,7 @@ fn send_data(
 }
 
 fn main() -> anyhow::Result<()> {
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let files = opt.files.clone();
 
