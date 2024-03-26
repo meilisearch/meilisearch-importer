@@ -78,6 +78,7 @@ fn send_data(
         let mut request = agent.post(&url);
         request = request.set("Content-Type", mime.as_str());
         request = request.set("Content-Encoding", "gzip");
+        request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
 
         if let Some(api_key) = &api_key {
             request = request.set("Authorization", &format!("Bearer {}", api_key));
