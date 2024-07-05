@@ -50,6 +50,10 @@ struct Opt {
     /// The size of the batches sent to Meilisearch.
     #[structopt(long, default_value = "20 MiB")]
     batch_size: Byte,
+
+    /// The number of batches to skip. Useful when the upload stopped for some reason.
+    #[structopt(long)]
+    skip_batches: Option<u64>,
 }
 
 fn send_data(
@@ -122,19 +126,25 @@ fn main() -> anyhow::Result<()> {
 
         match mime {
             Mime::Json => {
-                let data = fs::read_to_string(file)?;
-                send_data(&opt, &agent, &pb, &mime, data.as_bytes())?;
+                if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                    let data = fs::read_to_string(file)?;
+                    send_data(&opt, &agent, &pb, &mime, data.as_bytes())?;
+                }
                 pb.inc(1);
             }
             Mime::NdJson => {
                 for chunk in nd_json::NdJsonChunker::new(file, size) {
-                    send_data(&opt, &agent, &pb, &mime, &chunk)?;
+                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                        send_data(&opt, &agent, &pb, &mime, &chunk)?;
+                    }
                     pb.inc(1);
                 }
             }
             Mime::Csv => {
                 for chunk in csv::CsvChunker::new(file, size) {
-                    send_data(&opt, &agent, &pb, &mime, &chunk)?;
+                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                        send_data(&opt, &agent, &pb, &mime, &chunk)?;
+                    }
                     pb.inc(1);
                 }
             }
