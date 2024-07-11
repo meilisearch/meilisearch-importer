@@ -5,7 +5,7 @@ use std::{fs, thread};
 
 use anyhow::Context;
 use byte_unit::Byte;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use exponential_backoff::Backoff;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -44,7 +44,7 @@ struct Opt {
     api_key: Option<String>,
 
     /// A list of file paths that are streamed and sent to Meilisearch in batches.
-    #[structopt(long)]
+    #[structopt(long, num_args(1..))]
     files: Vec<PathBuf>,
 
     /// The size of the batches sent to Meilisearch.
@@ -54,11 +54,28 @@ struct Opt {
     /// The number of batches to skip. Useful when the upload stopped for some reason.
     #[structopt(long)]
     skip_batches: Option<u64>,
+
+    /// The operation to perform when uploading a document.
+    #[arg(
+        long,
+        value_name = "OPERATION",
+        num_args = 0..=1,
+        default_value_t = DocumentOperation::AddOrReplace,
+        value_enum
+    )]
+    upload_operation: DocumentOperation,
+}
+
+#[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
+enum DocumentOperation {
+    AddOrReplace,
+    AddOrUpdate,
 }
 
 fn send_data(
     opt: &Opt,
     agent: &Agent,
+    upload_operation: DocumentOperation,
     pb: &ProgressBar,
     mime: &Mime,
     data: &[u8],
@@ -79,7 +96,10 @@ fn send_data(
     let backoff = Backoff::new(retries, min, max);
 
     for (attempt, duration) in backoff.into_iter().enumerate() {
-        let mut request = agent.post(&url);
+        let mut request = match upload_operation {
+            DocumentOperation::AddOrReplace => agent.post(&url),
+            DocumentOperation::AddOrUpdate => agent.put(&url),
+        };
         request = request.set("Content-Type", mime.as_str());
         request = request.set("Content-Encoding", "gzip");
         request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
@@ -128,14 +148,14 @@ fn main() -> anyhow::Result<()> {
             Mime::Json => {
                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                     let data = fs::read_to_string(file)?;
-                    send_data(&opt, &agent, &pb, &mime, data.as_bytes())?;
+                    send_data(&opt, &agent, opt.upload_operation, &pb, &mime, data.as_bytes())?;
                 }
                 pb.inc(1);
             }
             Mime::NdJson => {
                 for chunk in nd_json::NdJsonChunker::new(file, size) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, &pb, &mime, &chunk)?;
+                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
                     pb.inc(1);
                 }
@@ -143,7 +163,7 @@ fn main() -> anyhow::Result<()> {
             Mime::Csv => {
                 for chunk in csv::CsvChunker::new(file, size) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, &pb, &mime, &chunk)?;
+                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
                     pb.inc(1);
                 }
