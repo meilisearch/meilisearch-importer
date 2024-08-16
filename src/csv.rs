@@ -2,7 +2,7 @@ use std::fs::File;
 use std::mem;
 use std::path::PathBuf;
 
-use csv::ByteRecord;
+use csv::{ReaderBuilder, ByteRecord};
 
 pub struct CsvChunker {
     pub(crate) reader: csv::Reader<File>,
@@ -14,7 +14,10 @@ pub struct CsvChunker {
 
 impl CsvChunker {
     pub fn new(file: PathBuf, size: usize) -> Self {
-        let mut reader = csv::Reader::from_path(file).unwrap();
+        let mut reader = ReaderBuilder::new()
+            .flexible(true)
+            .from_path(file)
+            .unwrap();
         let mut buffer = Vec::new();
         let headers = reader.byte_headers().unwrap().clone();
         buffer.extend_from_slice(headers.as_slice());
