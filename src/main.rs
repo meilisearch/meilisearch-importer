@@ -18,6 +18,8 @@ mod csv;
 mod mime;
 mod nd_json;
 
+use csv::ReaderBuilder;
+
 /// A tool to import massive datasets into Meilisearch by sending them in batches.
 #[derive(Debug, Parser, Clone)]
 #[command(name = "meilisearch-importer")]
@@ -64,6 +66,10 @@ struct Opt {
         value_enum
     )]
     upload_operation: DocumentOperation,
+
+    /// The CSV delimiter to use when reading CSV files. If not specified, the default comma (,) will be used.
+    #[structopt(long)]
+    csv_delimiter: Option<char>,
 }
 
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
@@ -84,6 +90,13 @@ fn send_data(
     let mut url = format!("{}/indexes/{}/documents", opt.url, opt.index);
     if let Some(primary_key) = &opt.primary_key {
         url = format!("{}?primaryKey={}", url, primary_key);
+    }
+    
+    // Add CSV delimiter to the URL if the mime type is CSV and delimiter is specified
+    if mime == &Mime::Csv {
+        if let Some(delimiter) = opt.csv_delimiter {
+            url = format!("{}&csvDelimiter={}", url, delimiter);
+        }
     }
 
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -161,7 +174,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             Mime::Csv => {
-                for chunk in csv::CsvChunker::new(file, size) {
+                for chunk in csv::CsvChunker::new(file, size, opt.csv_delimiter) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }

@@ -3,6 +3,7 @@ use std::mem;
 use std::path::PathBuf;
 
 use csv::ByteRecord;
+use csv::ReaderBuilder;
 
 pub struct CsvChunker {
     pub(crate) reader: csv::Reader<File>,
@@ -10,16 +11,29 @@ pub struct CsvChunker {
     pub(crate) buffer: Vec<u8>,
     pub(crate) record: ByteRecord,
     pub(crate) size: usize,
+    pub(crate) delimiter: Option<u8>,
 }
 
 impl CsvChunker {
-    pub fn new(file: PathBuf, size: usize) -> Self {
-        let mut reader = csv::Reader::from_path(file).unwrap();
+    pub fn new(file: PathBuf, size: usize, delimiter: Option<char>) -> Self {
+        let mut reader_builder = ReaderBuilder::new();
+        if let Some(delim) = delimiter {
+            reader_builder = reader_builder.delimiter(delim as u8);
+        }
+        let mut reader = reader_builder.from_path(file).unwrap();
+        
         let mut buffer = Vec::new();
         let headers = reader.byte_headers().unwrap().clone();
         buffer.extend_from_slice(headers.as_slice());
         buffer.push(b'\n');
-        Self { reader, headers, buffer, record: ByteRecord::new(), size }
+        Self { 
+            reader, 
+            headers, 
+            buffer, 
+            record: ByteRecord::new(), 
+            size,
+            delimiter: delimiter.map(|d| d as u8),
+        }
     }
 }
 
