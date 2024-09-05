@@ -18,8 +18,6 @@ mod csv;
 mod mime;
 mod nd_json;
 
-use csv::ReaderBuilder;
-
 /// A tool to import massive datasets into Meilisearch by sending them in batches.
 #[derive(Debug, Parser, Clone)]
 #[command(name = "meilisearch-importer")]
@@ -93,7 +91,7 @@ fn send_data(
     }
     
     // Add CSV delimiter to the URL if the mime type is CSV and delimiter is specified
-    if mime == &Mime::Csv {
+    if *mime == Mime::Csv {
         if let Some(delimiter) = opt.csv_delimiter {
             url = format!("{}&csvDelimiter={}", url, delimiter);
         }
@@ -138,7 +136,7 @@ fn send_data(
     anyhow::bail!("Too many errors. Stopping the retries.")
 }
 
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let files = opt.files.clone();
@@ -164,8 +162,8 @@ fn main() -> Result<()> {
                 pb.inc(1);
             }
             Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::new(file, size)? {
-                    let chunk = chunk?;
+                for chunk_result in nd_json::NdJsonChunker::new(file, size)? {
+                    let chunk = chunk_result?;
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }

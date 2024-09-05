@@ -1,5 +1,6 @@
 use std::path::Path;
 
+#[derive(PartialEq, Eq)]
 pub enum Mime {
     Json,
     NdJson,

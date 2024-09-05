@@ -11,14 +11,13 @@ pub struct CsvChunker {
     pub(crate) buffer: Vec<u8>,
     pub(crate) record: ByteRecord,
     pub(crate) size: usize,
-    pub(crate) delimiter: Option<u8>,
 }
 
 impl CsvChunker {
     pub fn new(file: PathBuf, size: usize, delimiter: Option<char>) -> Result<Self> {
         let mut reader_builder = ReaderBuilder::new();
         if let Some(delim) = delimiter {
-            reader_builder = reader_builder.delimiter(delim as u8);
+            reader_builder.delimiter(delim as u8);
         }
         let mut reader = reader_builder.from_path(&file)
             .with_context(|| format!("Failed to create CSV reader for file {:?}", file))?;
@@ -35,7 +34,6 @@ impl CsvChunker {
             buffer, 
             record: ByteRecord::new(), 
             size,
-            delimiter: delimiter.map(|d| d as u8),
         })
     }
 }

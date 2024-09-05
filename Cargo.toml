@@ -7,15 +7,15 @@ license = "MIT"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.81"
+anyhow = "1.0.86"
 byte-unit = { version = "5.1.4", features = ["byte", "serde"] }
-clap = { version = "4.5.3", features = ["derive"] }
+clap = { version = "4.5.17", features = ["derive"] }
 csv = "1.3.0"
 exponential-backoff = "1.2.0"
-flate2 = "1.0"
+flate2 = "1.0.33"
 indicatif = "0.17.8"
-serde_json = { version = "1.0.114", features = ["preserve_order"] }
-ureq = "2.9.6"
+serde_json = { version = "1.0.128", features = ["preserve_order"] }
+ureq = "2.10.1"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
@@ -29,7 +29,12 @@ cargo-dist-version = "0.11.1"
 # The installers to generate for each app
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
 # CI backends to support
 ci = ["github"]
 # Publish jobs to run in CI
