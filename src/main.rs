@@ -138,14 +138,12 @@ fn send_data(
     anyhow::bail!("Too many errors. Stopping the retries.")
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let files = opt.files.clone();
 
-    // for each files present in the argument
     for file in files {
-        // check if the file exists
         if !file.exists() {
             anyhow::bail!("The file {:?} does not exist", file);
         }
@@ -166,7 +164,8 @@ fn main() -> anyhow::Result<()> {
                 pb.inc(1);
             }
             Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::new(file, size) {
+                for chunk in nd_json::NdJsonChunker::new(file, size)? {
+                    let chunk = chunk?;
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
@@ -174,7 +173,9 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             Mime::Csv => {
-                for chunk in csv::CsvChunker::new(file, size, opt.csv_delimiter) {
+                let chunker = csv::CsvChunker::new(file, size, opt.csv_delimiter)?;
+                for chunk_result in chunker {
+                    let chunk = chunk_result?;
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
