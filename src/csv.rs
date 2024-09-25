@@ -28,22 +28,38 @@ impl Iterator for CsvChunker {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.reader.read_byte_record(&mut self.record).unwrap() {
-            if self.buffer.len() + self.record.len() >= self.size {
+            if self.buffer.len() + self.record.len() <= self.size {
                 let buffer = mem::take(&mut self.buffer);
 
                 // Insert the header and out of bound record
-                self.buffer.extend_from_slice(self.headers.as_slice());
+                self.headers.iter().enumerate().for_each(|(i, header)| {
+                    self.buffer.extend_from_slice(header);
+                    if i != self.record.len() - 1 {
+                        self.buffer.push(b','); // Add a comma after the field, except for the last one
+                    }
+                });
                 self.buffer.push(b'\n');
-                self.buffer.extend_from_slice(self.record.as_slice());
+                self.record.iter().enumerate().for_each(|(i, field)| {
+                    self.buffer.extend_from_slice(field);
+                    if i != self.record.len() - 1 {
+                        self.buffer.push(b','); // Add a comma after the field, except for the last one
+                    }
+                });
                 self.buffer.push(b'\n');
 
                 return Some(buffer);
             } else {
                 // Insert only the record
-                self.buffer.extend_from_slice(self.record.as_slice());
+                self.record.iter().enumerate().for_each(|(i, field)| {
+                    self.buffer.extend_from_slice(field);
+                    if i != self.record.len() - 1 {
+                        self.buffer.push(b','); // Add a comma after the field, except for the last one
+                    }
+                });
                 self.buffer.push(b'\n');
             }
         }
+
         // If there only less than or the headers in the buffer and a
         // newline character it means that there are no documents in it.
         if self.buffer.len() <= self.headers.len() + 1 {
