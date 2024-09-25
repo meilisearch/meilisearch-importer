@@ -8,6 +8,7 @@ pub struct CsvChunker {
     pub(crate) reader: csv::Reader<File>,
     pub(crate) headers: ByteRecord,
     pub(crate) writer: csv::Writer<Vec<u8>>,
+    pub(crate) record_count: usize,
     pub(crate) record: ByteRecord,
     pub(crate) size: usize,
     pub(crate) delimiter: u8,
@@ -19,7 +20,15 @@ impl CsvChunker {
         let mut writer = WriterBuilder::new().delimiter(delimiter).from_writer(Vec::new());
         let headers = reader.byte_headers().unwrap().clone();
         writer.write_byte_record(&headers).unwrap();
-        Self { reader, headers, writer, record: ByteRecord::new(), size, delimiter }
+        Self {
+            reader,
+            headers,
+            writer,
+            record_count: 0,
+            record: ByteRecord::new(),
+            size,
+            delimiter,
+        }
     }
 }
 
@@ -28,29 +37,32 @@ impl Iterator for CsvChunker {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.reader.read_byte_record(&mut self.record).unwrap() {
+            self.writer.flush().unwrap();
             if self.writer.get_ref().len() + self.record.len() >= self.size {
                 let mut writer =
                     WriterBuilder::new().delimiter(self.delimiter).from_writer(Vec::new());
                 writer.write_byte_record(&self.headers).unwrap();
+                self.record_count = 0;
                 let writer = mem::replace(&mut self.writer, writer);
 
                 // Insert the header and out of bound record
                 self.writer.write_byte_record(&self.headers).unwrap();
                 self.writer.write_byte_record(&self.record).unwrap();
+                self.record_count += 1;
 
                 return Some(writer.into_inner().unwrap());
             } else {
                 // Insert only the record
                 self.writer.write_byte_record(&self.record).unwrap();
+                self.record_count += 1;
             }
         }
-        // If there only less than or the headers in the buffer and a
-        // newline character it means that there are no documents in it.
-        if self.writer.get_ref().len() <= self.headers.len() + 1 {
+        if self.record_count == 0 {
             None
         } else {
             let mut writer = WriterBuilder::new().delimiter(self.delimiter).from_writer(Vec::new());
             writer.write_byte_record(&self.headers).unwrap();
+            self.record_count = 0;
             // We make the buffer empty by doing that and next time we will
             // come back to this _if else_ condition to then return None.
             let writer = mem::replace(&mut self.writer, writer);
