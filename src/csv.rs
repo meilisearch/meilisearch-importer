@@ -2,24 +2,24 @@ use std::fs::File;
 use std::mem;
 use std::path::PathBuf;
 
-use csv::ByteRecord;
+use csv::{ByteRecord, WriterBuilder};
 
 pub struct CsvChunker {
     pub(crate) reader: csv::Reader<File>,
     pub(crate) headers: ByteRecord,
-    pub(crate) buffer: Vec<u8>,
+    pub(crate) writer: csv::Writer<Vec<u8>>,
     pub(crate) record: ByteRecord,
     pub(crate) size: usize,
+    pub(crate) delimiter: u8,
 }
 
 impl CsvChunker {
-    pub fn new(file: PathBuf, size: usize) -> Self {
+    pub fn new(file: PathBuf, size: usize, delimiter: u8) -> Self {
         let mut reader = csv::Reader::from_path(file).unwrap();
-        let mut buffer = Vec::new();
+        let mut writer = WriterBuilder::new().delimiter(delimiter).from_writer(Vec::new());
         let headers = reader.byte_headers().unwrap().clone();
-        buffer.extend_from_slice(headers.as_slice());
-        buffer.push(b'\n');
-        Self { reader, headers, buffer, record: ByteRecord::new(), size }
+        writer.write_byte_record(&headers).unwrap();
+        Self { reader, headers, writer, record: ByteRecord::new(), size, delimiter }
     }
 }
 
@@ -28,30 +28,33 @@ impl Iterator for CsvChunker {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.reader.read_byte_record(&mut self.record).unwrap() {
-            if self.buffer.len() + self.record.len() >= self.size {
-                let buffer = mem::take(&mut self.buffer);
+            if self.writer.get_ref().len() + self.record.len() >= self.size {
+                let mut writer =
+                    WriterBuilder::new().delimiter(self.delimiter).from_writer(Vec::new());
+                writer.write_byte_record(&self.headers).unwrap();
+                let writer = mem::replace(&mut self.writer, writer);
 
                 // Insert the header and out of bound record
-                self.buffer.extend_from_slice(self.headers.as_slice());
-                self.buffer.push(b'\n');
-                self.buffer.extend_from_slice(self.record.as_slice());
-                self.buffer.push(b'\n');
+                self.writer.write_byte_record(&self.headers).unwrap();
+                self.writer.write_byte_record(&self.record).unwrap();
 
-                return Some(buffer);
+                return Some(writer.into_inner().unwrap());
             } else {
                 // Insert only the record
-                self.buffer.extend_from_slice(self.record.as_slice());
-                self.buffer.push(b'\n');
+                self.writer.write_byte_record(&self.record).unwrap();
             }
         }
         // If there only less than or the headers in the buffer and a
         // newline character it means that there are no documents in it.
-        if self.buffer.len() <= self.headers.len() + 1 {
+        if self.writer.get_ref().len() <= self.headers.len() + 1 {
             None
         } else {
+            let mut writer = WriterBuilder::new().delimiter(self.delimiter).from_writer(Vec::new());
+            writer.write_byte_record(&self.headers).unwrap();
             // We make the buffer empty by doing that and next time we will
             // come back to this _if else_ condition to then return None.
-            Some(mem::take(&mut self.buffer))
+            let writer = mem::replace(&mut self.writer, writer);
+            Some(writer.into_inner().unwrap())
         }
     }
 }

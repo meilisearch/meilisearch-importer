@@ -43,6 +43,10 @@ struct Opt {
     #[structopt(long)]
     api_key: Option<String>,
 
+    /// The delimiter to use for the CSV files.
+    #[structopt(long, default_value_t = b',')]
+    csv_delimiter: u8,
+
     /// A list of file paths that are streamed and sent to Meilisearch in batches.
     #[structopt(long, num_args(1..))]
     files: Vec<PathBuf>,
@@ -161,7 +165,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             Mime::Csv => {
-                for chunk in csv::CsvChunker::new(file, size) {
+                for chunk in csv::CsvChunker::new(file, size, opt.csv_delimiter) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
