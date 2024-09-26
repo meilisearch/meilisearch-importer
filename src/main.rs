@@ -55,6 +55,10 @@ struct Opt {
     #[structopt(long, default_value = "20 MiB")]
     batch_size: Byte,
 
+    /// How long in seconds should we wait between two batchs sent.
+    #[structopt(long, default_value_t = 0)]
+    wait_secs_between_sends: u64,
+
     /// The number of batches to skip. Useful when the upload stopped for some reason.
     #[structopt(long)]
     skip_batches: Option<u64>,
@@ -154,6 +158,7 @@ fn main() -> anyhow::Result<()> {
                     let data = fs::read_to_string(file)?;
                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, data.as_bytes())?;
                 }
+                std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                 pb.inc(1);
             }
             Mime::NdJson => {
@@ -161,6 +166,7 @@ fn main() -> anyhow::Result<()> {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
+                    std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                     pb.inc(1);
                 }
             }
@@ -169,6 +175,7 @@ fn main() -> anyhow::Result<()> {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
+                    std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                     pb.inc(1);
                 }
             }
