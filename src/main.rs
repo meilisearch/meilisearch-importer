@@ -158,16 +158,16 @@ fn main() -> anyhow::Result<()> {
                     let data = fs::read_to_string(file)?;
                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, data.as_bytes())?;
                 }
-                std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                 pb.inc(1);
+                std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
             }
             Mime::NdJson => {
                 for chunk in nd_json::NdJsonChunker::new(file, size) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
-                    std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                     pb.inc(1);
+                    std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                 }
             }
             Mime::Csv => {
@@ -175,8 +175,8 @@ fn main() -> anyhow::Result<()> {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
-                    std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                     pb.inc(1);
+                    std::thread::sleep(Duration::from_secs(opt.wait_secs_between_sends));
                 }
             }
         }
