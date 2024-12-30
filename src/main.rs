@@ -1,5 +1,5 @@
 use std::io::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{fs, thread};
 
@@ -142,7 +142,7 @@ fn main() -> anyhow::Result<()> {
     // for each files present in the argument
     for file in files {
         // check if the file exists
-        if !file.exists() {
+        if file != Path::new("-") && !file.exists() {
             anyhow::bail!("The file {:?} does not exist", file);
         }
 
