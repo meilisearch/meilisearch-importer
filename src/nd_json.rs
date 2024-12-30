@@ -1,5 +1,6 @@
 use std::fs::File;
-use std::path::PathBuf;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::{io, mem};
 
 use serde_json::de::IoRead;
@@ -8,14 +9,20 @@ use serde_json::{to_writer, Deserializer, Map, StreamDeserializer, Value};
 use crate::byte_count::ByteCount;
 
 pub struct NdJsonChunker {
-    pub reader: StreamDeserializer<'static, IoRead<io::BufReader<File>>, Map<String, Value>>,
+    #[allow(clippy::type_complexity)]
+    pub reader: StreamDeserializer<'static, IoRead<BufReader<Box<dyn Read>>>, Map<String, Value>>,
     pub buffer: Vec<u8>,
     pub size: usize,
 }
 
 impl NdJsonChunker {
-    pub fn new(file: PathBuf, size: usize) -> Self {
-        let reader = io::BufReader::new(File::open(file).unwrap());
+    pub fn new(path: PathBuf, size: usize) -> Self {
+        let reader = if path == Path::new("-") {
+            Box::new(io::stdin()) as Box<dyn Read>
+        } else {
+            Box::new(File::open(path).unwrap())
+        };
+        let reader = BufReader::new(reader);
         Self { reader: Deserializer::from_reader(reader).into_iter(), buffer: Vec::new(), size }
     }
 }

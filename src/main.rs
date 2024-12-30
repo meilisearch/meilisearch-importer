@@ -47,9 +47,14 @@ struct Opt {
     #[structopt(long, default_value_t = b',')]
     csv_delimiter: u8,
 
-    /// A list of file paths that are streamed and sent to Meilisearch in batches.
+    /// A list of file paths that are streamed and sent to Meilisearch in batches,
+    /// where content can come from stdin using the special minus (-) path.
     #[structopt(long, num_args(1..))]
     files: Vec<PathBuf>,
+
+    /// The file format to use. Overrides auto-detection, useful for stdin input (-).
+    #[structopt(long)]
+    format: Option<Mime>,
 
     /// The size of the batches sent to Meilisearch.
     #[structopt(long, default_value = "20 MiB")]
@@ -141,7 +146,11 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("The file {:?} does not exist", file);
         }
 
-        let mime = Mime::from_path(&file).context("Could not find the mime type")?;
+        let mime = match opt.format {
+            Some(mime) => mime,
+            None => Mime::from_path(&file).context("Could not find the mime type")?,
+        };
+
         let file_size = fs::metadata(&file)?.len();
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;

@@ -1,5 +1,7 @@
 use std::path::Path;
+use std::str::FromStr;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Mime {
     Json,
     NdJson,
@@ -21,6 +23,21 @@ impl Mime {
             Mime::Json => "application/json",
             Mime::NdJson => "application/x-ndjson",
             Mime::Csv => "text/csv",
+        }
+    }
+}
+
+impl FromStr for Mime {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "json" => Ok(Mime::Json),
+            "ndjson" | "jsonl" => Ok(Mime::NdJson),
+            "csv" => Ok(Mime::Csv),
+            otherwise => anyhow::bail!(
+                "unkown {otherwise} file format. Possible values are json, ndjson, jsonl, and csv."
+            ),
         }
     }
 }

@@ -1,11 +1,12 @@
 use std::fs::File;
+use std::io::{self, Read};
 use std::mem;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use csv::{ByteRecord, WriterBuilder};
 
 pub struct CsvChunker {
-    pub(crate) reader: csv::Reader<File>,
+    pub(crate) reader: csv::Reader<Box<dyn Read>>,
     pub(crate) headers: ByteRecord,
     pub(crate) writer: csv::Writer<Vec<u8>>,
     pub(crate) record_count: usize,
@@ -15,8 +16,13 @@ pub struct CsvChunker {
 }
 
 impl CsvChunker {
-    pub fn new(file: PathBuf, size: usize, delimiter: u8) -> Self {
-        let mut reader = csv::Reader::from_path(file).unwrap();
+    pub fn new(path: PathBuf, size: usize, delimiter: u8) -> Self {
+        let reader = if path == Path::new("-") {
+            Box::new(io::stdin()) as Box<dyn Read>
+        } else {
+            Box::new(File::open(path).unwrap())
+        };
+        let mut reader = csv::Reader::from_reader(reader);
         let mut writer = WriterBuilder::new().delimiter(delimiter).from_writer(Vec::new());
         let headers = reader.byte_headers().unwrap().clone();
         writer.write_byte_record(&headers).unwrap();
