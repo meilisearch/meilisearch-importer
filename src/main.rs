@@ -140,18 +140,18 @@ fn main() -> anyhow::Result<()> {
     let files = opt.files.clone();
 
     // for each files present in the argument
-    for file in files {
+    for path in files {
         // check if the file exists
-        if file != Path::new("-") && !file.exists() {
-            anyhow::bail!("The file {:?} does not exist", file);
+        if path != Path::new("-") && !path.exists() {
+            anyhow::bail!("The file {:?} does not exist", path);
         }
 
         let mime = match opt.format {
             Some(mime) => mime,
-            None => Mime::from_path(&file).context("Could not find the mime type")?,
+            None => Mime::from_path(&path).context("Could not find the mime type")?,
         };
 
-        let file_size = fs::metadata(&file)?.len();
+        let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
         let pb = ProgressBar::new(nb_chunks);
@@ -160,13 +160,13 @@ fn main() -> anyhow::Result<()> {
         match mime {
             Mime::Json => {
                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                    let data = fs::read_to_string(file)?;
+                    let data = fs::read_to_string(path)?;
                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, data.as_bytes())?;
                 }
                 pb.inc(1);
             }
             Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::new(file, size) {
+                for chunk in nd_json::NdJsonChunker::new(path, size) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
@@ -174,7 +174,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             Mime::Csv => {
-                for chunk in csv::CsvChunker::new(file, size, opt.csv_delimiter) {
+                for chunk in csv::CsvChunker::new(path, size, opt.csv_delimiter) {
                     if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                         send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                     }
