@@ -26,8 +26,8 @@ struct Opt {
     /// It looks like the following:
     ///
     /// https://ms-************.sfo.meilisearch.io
-    #[structopt(long)]
-    url: String,
+    #[structopt(long, value_delimiter = ',')]
+    url: Vec<String>,
 
     /// The index name you want to send your documents in.
     #[structopt(long)]
@@ -40,8 +40,8 @@ struct Opt {
 
     /// The API key to access Meilisearch. This API key must have the `documents.add` right.
     /// The Master Key and the Default Admin API Key can be used to send documents.
-    #[structopt(long)]
-    api_key: Option<String>,
+    #[structopt(long, value_delimiter = ',')]
+    api_key: Vec<String>,
 
     /// The delimiter to use for the CSV files.
     #[structopt(long, default_value_t = b',')]
@@ -89,44 +89,42 @@ fn send_data(
     mime: &Mime,
     data: &[u8],
 ) -> anyhow::Result<()> {
-    let api_key = opt.api_key.clone();
-    let mut url = format!("{}/indexes/{}/documents", opt.url, opt.index);
-    if let Some(primary_key) = &opt.primary_key {
-        url = format!("{}?primaryKey={}", url, primary_key);
-    }
-
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data)?;
-    let data = encoder.finish()?;
-
-    let retries = 20;
-    let min = Duration::from_millis(100); // 10ms
-    let max = Duration::from_secs(60 * 60); // 1h
-    let backoff = Backoff::new(retries, min, max);
-
-    for (attempt, duration) in backoff.into_iter().enumerate() {
-        let mut request = match upload_operation {
-            DocumentOperation::AddOrReplace => agent.post(&url),
-            DocumentOperation::AddOrUpdate => agent.put(&url),
-        };
-        request = request.set("Content-Type", mime.as_str());
-        request = request.set("Content-Encoding", "gzip");
-        request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
-
-        if let Some(api_key) = &api_key {
-            request = request.set("Authorization", &format!("Bearer {}", api_key));
+    for (url, api_key) in opt.url.iter().zip(opt.api_key.iter()) {
+        let mut url = format!("{}/indexes/{}/documents", url, opt.index);
+        if let Some(primary_key) = &opt.primary_key {
+            url = format!("{}?primaryKey={}", url, primary_key);
         }
 
-        match request.send_bytes(&data) {
-            Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
-            Ok(response) => {
-                let e = response.into_string()?;
-                pb.println(format!("Attempt #{attempt}: {e}"));
-                thread::sleep(duration);
-            }
-            Err(e) => {
-                pb.println(format!("Attempt #{attempt}: {e}"));
-                thread::sleep(duration);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data)?;
+        let data = encoder.finish()?;
+
+        let retries = 20;
+        let min = Duration::from_millis(100); // 10ms
+        let max = Duration::from_secs(60 * 60); // 1h
+        let backoff = Backoff::new(retries, min, max);
+
+        for (attempt, duration) in backoff.into_iter().enumerate() {
+            let mut request = match upload_operation {
+                DocumentOperation::AddOrReplace => agent.post(&url),
+                DocumentOperation::AddOrUpdate => agent.put(&url),
+            };
+            request = request.set("Content-Type", mime.as_str());
+            request = request.set("Content-Encoding", "gzip");
+            request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
+            request = request.set("Authorization", &format!("Bearer {}", api_key));
+
+            match request.send_bytes(&data) {
+                Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
+                Ok(response) => {
+                    let e = response.into_string()?;
+                    pb.println(format!("Attempt #{attempt}: {e}"));
+                    thread::sleep(duration);
+                }
+                Err(e) => {
+                    pb.println(format!("Attempt #{attempt}: {e}"));
+                    thread::sleep(duration);
+                }
             }
         }
     }
@@ -138,46 +136,42 @@ fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let files = opt.files.clone();
+    assert_eq!(opt.url.len(), opt.api_key.len());
 
-    // for each files present in the argument
-    for path in files {
-        // check if the file exists
-        if path != Path::new("-") && !path.exists() {
-            anyhow::bail!("The file {:?} does not exist", path);
-        }
-
-        let mime = match opt.format {
-            Some(mime) => mime,
-            None => Mime::from_path(&path).context("Could not find the mime type")?,
-        };
-
-        let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
-        let size = opt.batch_size.as_u64() as usize;
-        let nb_chunks = file_size / size as u64;
-        let pb = ProgressBar::new(nb_chunks);
-        pb.inc(0);
-
-        match mime {
-            Mime::Json => {
-                if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                    let data = fs::read_to_string(path)?;
-                    send_data(&opt, &agent, opt.upload_operation, &pb, &mime, data.as_bytes())?;
-                }
-                pb.inc(1);
+    for (url, api_key) in opt.url.iter().zip(opt.api_key.iter()) {
+        // for each files present in the argument
+        for path in files.iter() {
+            // check if the file exists
+            if path != Path::new("-") && !path.exists() {
+                anyhow::bail!("The file {:?} does not exist", path);
             }
-            Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::new(path, size) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    }
+
+            let mime = match opt.format {
+                Some(mime) => mime,
+                None => Mime::from_path(&path).context("Could not find the mime type")?,
+            };
+
+            let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
+            let size = opt.batch_size.as_u64() as usize;
+            let nb_chunks = file_size / size as u64;
+            let pb = ProgressBar::new(nb_chunks);
+            pb.inc(0);
+
+            match mime {
+                Mime::Json => {
+                    unimplemented!();
                     pb.inc(1);
                 }
-            }
-            Mime::Csv => {
-                for chunk in csv::CsvChunker::new(path, size, opt.csv_delimiter) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                Mime::NdJson => {
+                    for chunk in nd_json::NdJsonChunker::new(path, size, url.to_string(), opt.url.clone(), opt.primary_key.clone().unwrap_or_default()) {
+                        if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                            send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                        }
+                        pb.inc(1);
                     }
+                }
+                Mime::Csv => {
+                    unimplemented!();
                     pb.inc(1);
                 }
             }
