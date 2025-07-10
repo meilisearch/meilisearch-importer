@@ -44,15 +44,14 @@ impl Iterator for NdJsonChunker {
     fn next(&mut self) -> Option<Self::Item> {
         for result in self.reader.by_ref() {
             let object = result.unwrap();
-            let pk = object.get(&self.pk).unwrap().as_str().unwrap();
-            let max_hash = self
-                .other
-                .iter()
-                .filter(|other| *other != &self.me)
-                .map(|url| format!("{url}{pk}").hash(&mut DefaultHasher::new()))
-                .max()
-                .unwrap();
-            if max_hash > format!("{}{pk}", self.me).hash(&mut DefaultHasher::new()) {
+            let me = self.other.iter().position(|other| other == &self.me).unwrap();
+            let pk = object
+                .get(&self.pk)
+                .expect(&format!("Primary key {} not found in object {:?}", self.pk, object))
+                .as_u64()
+                .expect(&format!("Primary key {} is not a u64 in object {:?}", self.pk, object));
+            let selected_bucket = pk % self.other.len() as u64;
+            if selected_bucket == me as u64 {
                 continue;
             }
 

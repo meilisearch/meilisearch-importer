@@ -134,55 +134,77 @@ fn send_data(
 
 fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
-    let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let files = opt.files.clone();
     assert_eq!(opt.url.len(), opt.api_key.len());
 
-    for (url, api_key) in opt.url.iter().zip(opt.api_key.iter()) {
-        // for each files present in the argument
-        for path in files.iter() {
-            // check if the file exists
-            if path != Path::new("-") && !path.exists() {
-                anyhow::bail!("The file {:?} does not exist", path);
-            }
+    rayon::ThreadPoolBuilder::new().num_threads(opt.url.len() + 1).build_global().unwrap();
 
-            let mime = match opt.format {
-                Some(mime) => mime,
-                None => Mime::from_path(&path).context("Could not find the mime type")?,
-            };
+    rayon::scope(|s| {
+        for (url, api_key) in opt.url.iter().cloned().zip(opt.api_key.iter().cloned()) {
+            let opt = opt.clone();
+            let files = files.clone();
+            s.spawn(move |_| {
+                let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
 
-            let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
-            let size = opt.batch_size.as_u64() as usize;
-            let nb_chunks = file_size / size as u64;
-            let pb = ProgressBar::new(nb_chunks);
-            pb.inc(0);
+                // for each files present in the argument
+                for path in files.iter() {
+                    // check if the file exists
+                    if path != Path::new("-") && !path.exists() {
+                        panic!("The file {:?} does not exist", path);
+                    }
 
-            match mime {
-                Mime::Json => {
-                    unimplemented!();
-                    pb.inc(1);
-                }
-                Mime::NdJson => {
-                    for chunk in nd_json::NdJsonChunker::new(
-                        path,
-                        size,
-                        url.to_string(),
-                        opt.url.clone(),
-                        opt.primary_key.clone().unwrap_or_default(),
-                    ) {
-                        if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                            send_data(url, api_key, &opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                    let mime = match opt.format {
+                        Some(mime) => mime,
+                        None => {
+                            Mime::from_path(&path).context("Could not find the mime type").unwrap()
                         }
-                        pb.inc(1);
+                    };
+
+                    let file_size =
+                        if path == Path::new("-") { 0 } else { fs::metadata(&path).unwrap().len() };
+                    let size = opt.batch_size.as_u64() as usize;
+                    let nb_chunks = file_size / size as u64;
+                    let pb = ProgressBar::new(nb_chunks);
+                    pb.inc(0);
+
+                    match mime {
+                        Mime::Json => {
+                            unimplemented!();
+                            pb.inc(1);
+                        }
+                        Mime::NdJson => {
+                            for chunk in nd_json::NdJsonChunker::new(
+                                path,
+                                size,
+                                url.to_string(),
+                                opt.url.clone(),
+                                opt.primary_key.clone().unwrap_or_default(),
+                            ) {
+                                if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                                    send_data(
+                                        &url,
+                                        &api_key,
+                                        &opt,
+                                        &agent,
+                                        opt.upload_operation,
+                                        &pb,
+                                        &mime,
+                                        &chunk,
+                                    )
+                                    .unwrap();
+                                }
+                                pb.inc(1);
+                            }
+                        }
+                        Mime::Csv => {
+                            unimplemented!();
+                            pb.inc(1);
+                        }
                     }
                 }
-                Mime::Csv => {
-                    unimplemented!();
-                    pb.inc(1);
-                }
-            }
+            });
         }
-    }
+    });
 
     Ok(())
 }
