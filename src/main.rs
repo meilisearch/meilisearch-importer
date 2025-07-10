@@ -82,6 +82,8 @@ enum DocumentOperation {
 }
 
 fn send_data(
+    url: &str,
+    api_key: &str,
     opt: &Opt,
     agent: &Agent,
     upload_operation: DocumentOperation,
@@ -89,42 +91,40 @@ fn send_data(
     mime: &Mime,
     data: &[u8],
 ) -> anyhow::Result<()> {
-    for (url, api_key) in opt.url.iter().zip(opt.api_key.iter()) {
-        let mut url = format!("{}/indexes/{}/documents", url, opt.index);
-        if let Some(primary_key) = &opt.primary_key {
-            url = format!("{}?primaryKey={}", url, primary_key);
-        }
+    let mut url = format!("{}/indexes/{}/documents", url, opt.index);
+    if let Some(primary_key) = &opt.primary_key {
+        url = format!("{}?primaryKey={}", url, primary_key);
+    }
 
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(data)?;
-        let data = encoder.finish()?;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    let data = encoder.finish()?;
 
-        let retries = 20;
-        let min = Duration::from_millis(100); // 10ms
-        let max = Duration::from_secs(60 * 60); // 1h
-        let backoff = Backoff::new(retries, min, max);
+    let retries = 20;
+    let min = Duration::from_millis(100); // 10ms
+    let max = Duration::from_secs(60 * 60); // 1h
+    let backoff = Backoff::new(retries, min, max);
 
-        for (attempt, duration) in backoff.into_iter().enumerate() {
-            let mut request = match upload_operation {
-                DocumentOperation::AddOrReplace => agent.post(&url),
-                DocumentOperation::AddOrUpdate => agent.put(&url),
-            };
-            request = request.set("Content-Type", mime.as_str());
-            request = request.set("Content-Encoding", "gzip");
-            request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
-            request = request.set("Authorization", &format!("Bearer {}", api_key));
+    for (attempt, duration) in backoff.into_iter().enumerate() {
+        let mut request = match upload_operation {
+            DocumentOperation::AddOrReplace => agent.post(&url),
+            DocumentOperation::AddOrUpdate => agent.put(&url),
+        };
+        request = request.set("Content-Type", mime.as_str());
+        request = request.set("Content-Encoding", "gzip");
+        request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
+        request = request.set("Authorization", &format!("Bearer {}", api_key));
 
-            match request.send_bytes(&data) {
-                Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
-                Ok(response) => {
-                    let e = response.into_string()?;
-                    pb.println(format!("Attempt #{attempt}: {e}"));
-                    thread::sleep(duration);
-                }
-                Err(e) => {
-                    pb.println(format!("Attempt #{attempt}: {e}"));
-                    thread::sleep(duration);
-                }
+        match request.send_bytes(&data) {
+            Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
+            Ok(response) => {
+                let e = response.into_string()?;
+                pb.println(format!("Attempt #{attempt}: {e}"));
+                thread::sleep(duration);
+            }
+            Err(e) => {
+                pb.println(format!("Attempt #{attempt}: {e}"));
+                thread::sleep(duration);
             }
         }
     }
@@ -163,9 +163,15 @@ fn main() -> anyhow::Result<()> {
                     pb.inc(1);
                 }
                 Mime::NdJson => {
-                    for chunk in nd_json::NdJsonChunker::new(path, size, url.to_string(), opt.url.clone(), opt.primary_key.clone().unwrap_or_default()) {
+                    for chunk in nd_json::NdJsonChunker::new(
+                        path,
+                        size,
+                        url.to_string(),
+                        opt.url.clone(),
+                        opt.primary_key.clone().unwrap_or_default(),
+                    ) {
                         if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                            send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                            send_data(url, api_key, &opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
                         }
                         pb.inc(1);
                     }
