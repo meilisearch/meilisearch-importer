@@ -22,6 +22,15 @@ impl NdJsonChunker {
         } else {
             Box::new(File::open(path).unwrap())
         };
+        Self::create(reader, size)
+    }
+
+    pub fn from_stdin(size: usize) -> Self {
+        let reader = Box::new(io::stdin()) as Box<dyn Read>;
+        Self::create(reader, size)
+    }
+
+    fn create(reader: Box<dyn Read>, size: usize) -> Self {
         let reader = BufReader::new(reader);
         Self { reader: Deserializer::from_reader(reader).into_iter(), buffer: Vec::new(), size }
     }
