@@ -22,10 +22,20 @@ impl CsvChunker {
         } else {
             Box::new(File::open(path).unwrap())
         };
+        Self::create(reader, size, delimiter)
+    }
+
+    pub fn from_stdin(size: usize, delimiter: u8) -> Self {
+        let reader = Box::new(io::stdin()) as Box<dyn Read>;
+        Self::create(reader, size, delimiter)
+    }
+
+    fn create(reader: Box<dyn Read>, size: usize, delimiter: u8) -> Self {
         let mut reader = csv::Reader::from_reader(reader);
         let mut writer = WriterBuilder::new().delimiter(delimiter).from_writer(Vec::new());
         let headers = reader.byte_headers().unwrap().clone();
         writer.write_byte_record(&headers).unwrap();
+
         Self {
             reader,
             headers,
