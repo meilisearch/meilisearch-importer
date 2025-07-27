@@ -18,6 +18,8 @@ mod csv;
 mod mime;
 mod nd_json;
 
+const BUFFER_SIZE: usize = 128; //1024 * 4;
+
 /// A tool to import massive datasets into Meilisearch by sending them in batches.
 #[derive(Debug, Parser, Clone)]
 #[command(name = "meilisearch-importer")]
@@ -63,6 +65,10 @@ struct Opt {
     /// The number of batches to skip. Useful when the upload stopped for some reason.
     #[structopt(long)]
     skip_batches: Option<u64>,
+
+    /// Whether to read the data from stdin or to use the 'files' argument.
+    #[structopt(long, default_value = "false")]
+    stdin: bool,
 
     /// The operation to perform when uploading a document.
     #[arg(
@@ -138,6 +144,39 @@ fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let files = opt.files.clone();
+
+    if opt.stdin {
+        if !opt.files.is_empty() {
+            anyhow::bail!("--files option not supported when using stdin");
+        }
+
+        let size = opt.batch_size.as_u64() as usize;
+        let mime = match opt.format {
+            Some(mime) => mime,
+            None => anyhow::bail!("MIME type must be provided when using stdin"),
+        };
+
+        let pb = ProgressBar::new(0);
+        match mime {
+            Mime::NdJson => {
+                for chunk in nd_json::NdJsonChunker::from_stdin(size) {
+                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                    }
+                }
+            }
+            Mime::Csv => {
+                for chunk in csv::CsvChunker::from_stdin(size, opt.csv_delimiter) {
+                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                    }
+                }
+            }
+            Mime::Json => anyhow::bail!("JSON not supported when using stdin"),
+        };
+
+        return Ok(());
+    }
 
     // for each files present in the argument
     for path in files {
