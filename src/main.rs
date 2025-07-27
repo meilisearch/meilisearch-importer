@@ -18,8 +18,6 @@ mod csv;
 mod mime;
 mod nd_json;
 
-const BUFFER_SIZE: usize = 128; //1024 * 4;
-
 /// A tool to import massive datasets into Meilisearch by sending them in batches.
 #[derive(Debug, Parser, Clone)]
 #[command(name = "meilisearch-importer")]
@@ -66,9 +64,9 @@ struct Opt {
     #[structopt(long)]
     skip_batches: Option<u64>,
 
-    /// Whether to read the data from stdin or to use the 'files' argument.
-    #[structopt(long, default_value = "false")]
-    stdin: bool,
+    /// Tells us to read data from stdin and to use the provided format.
+    #[structopt(long, conflicts_with("files"))]
+    stdin: Option<Mime>,
 
     /// The operation to perform when uploading a document.
     #[arg(
@@ -143,37 +141,10 @@ fn send_data(
 fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-    let files = if opt.stdin { vec![PathBuf::from("-")] } else { opt.files.clone() };
-
-    // if opt.stdin {
-    //
-    //     let size = opt.batch_size.as_u64() as usize;
-    //     let mime = match opt.format {
-    //         Some(mime) => mime,
-    //         None => anyhow::bail!("MIME type must be provided when using stdin"),
-    //     };
-    //
-    //     let pb = ProgressBar::new(0);
-    //     match mime {
-    //         Mime::NdJson => {
-    //             for chunk in nd_json::NdJsonChunker::from_stdin(size) {
-    //                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-    //                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-    //                 }
-    //             }
-    //         }
-    //         Mime::Csv => {
-    //             for chunk in csv::CsvChunker::from_stdin(size, opt.csv_delimiter) {
-    //                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-    //                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-    //                 }
-    //             }
-    //         }
-    //         Mime::Json => anyhow::bail!("JSON not supported when using stdin"),
-    //     };
-    //
-    //     return Ok(());
-    // }
+    let files = match opt.stdin {
+        Some(_) => vec![PathBuf::from("-")],
+        None => opt.files.clone(),
+    };
 
     // for each files present in the argument
     for path in files {
@@ -182,9 +153,14 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("The file {:?} does not exist", path);
         }
 
-        let mime = match opt.format {
+        // get the mime type from either the stdin argument, the format argument if provided or from
+        // the extension of the file.
+        let mime = match opt.stdin {
             Some(mime) => mime,
-            None => Mime::from_path(&path).context("Could not find the mime type")?,
+            None => match opt.format {
+                Some(mime) => mime,
+                None => Mime::from_path(&path).context("Could not find the mime type")?,
+            },
         };
 
         let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
