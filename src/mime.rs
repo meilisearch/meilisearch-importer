@@ -36,7 +36,7 @@ impl FromStr for Mime {
             "ndjson" | "jsonl" => Ok(Mime::NdJson),
             "csv" => Ok(Mime::Csv),
             otherwise => anyhow::bail!(
-                "unkown {otherwise} file format. Possible values are json, ndjson, jsonl, and csv."
+                "unknown {otherwise} file format. Possible values are json, ndjson, jsonl, and csv."
             ),
         }
     }
