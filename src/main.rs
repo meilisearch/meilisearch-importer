@@ -143,40 +143,37 @@ fn send_data(
 fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-    let files = opt.files.clone();
+    let files = if opt.stdin { vec![PathBuf::from("-")] } else { opt.files.clone() };
 
-    if opt.stdin {
-        if !opt.files.is_empty() {
-            anyhow::bail!("--files option not supported when using stdin");
-        }
-
-        let size = opt.batch_size.as_u64() as usize;
-        let mime = match opt.format {
-            Some(mime) => mime,
-            None => anyhow::bail!("MIME type must be provided when using stdin"),
-        };
-
-        let pb = ProgressBar::new(0);
-        match mime {
-            Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::from_stdin(size) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    }
-                }
-            }
-            Mime::Csv => {
-                for chunk in csv::CsvChunker::from_stdin(size, opt.csv_delimiter) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    }
-                }
-            }
-            Mime::Json => anyhow::bail!("JSON not supported when using stdin"),
-        };
-
-        return Ok(());
-    }
+    // if opt.stdin {
+    //
+    //     let size = opt.batch_size.as_u64() as usize;
+    //     let mime = match opt.format {
+    //         Some(mime) => mime,
+    //         None => anyhow::bail!("MIME type must be provided when using stdin"),
+    //     };
+    //
+    //     let pb = ProgressBar::new(0);
+    //     match mime {
+    //         Mime::NdJson => {
+    //             for chunk in nd_json::NdJsonChunker::from_stdin(size) {
+    //                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+    //                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+    //                 }
+    //             }
+    //         }
+    //         Mime::Csv => {
+    //             for chunk in csv::CsvChunker::from_stdin(size, opt.csv_delimiter) {
+    //                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+    //                     send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+    //                 }
+    //             }
+    //         }
+    //         Mime::Json => anyhow::bail!("JSON not supported when using stdin"),
+    //     };
+    //
+    //     return Ok(());
+    // }
 
     // for each files present in the argument
     for path in files {
@@ -193,7 +190,8 @@ fn main() -> anyhow::Result<()> {
         let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
-        let pb = ProgressBar::new(nb_chunks);
+        let pb =
+            if file_size > 0 { ProgressBar::new(nb_chunks) } else { ProgressBar::new_spinner() };
         pb.inc(0);
 
         match mime {
