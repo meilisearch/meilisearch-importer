@@ -51,6 +51,10 @@ struct Opt {
     #[structopt(long, default_value_t = b',')]
     csv_delimiter: u8,
 
+    /// Defines whether we send the embeddings to the remote server or do not send a single embedding.
+    #[structopt(long)]
+    ignore_embeddings: bool,
+
     /// A list of file paths that are streamed and sent to Meilisearch in batches,
     /// where content can come from stdin using the special minus (-) path.
     #[structopt(long, num_args(1..))]
@@ -176,6 +180,10 @@ fn main() -> anyhow::Result<()> {
 
         let pool = ThreadPoolBuilder::new().num_threads(opt.jobs.get()).build()?;
 
+        if opt.ignore_embeddings && mime != Mime::NdJson {
+            anyhow::bail!("Ignoring embeddings can only be used with NDJSON files");
+        }
+
         let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
@@ -200,7 +208,7 @@ fn main() -> anyhow::Result<()> {
                 thread::scope(|s| {
                     let (tx, rx) = std::sync::mpsc::sync_channel(100);
                     let producer_handle = s.spawn(move || {
-                        for chunk in nd_json::NdJsonChunker::new(path, size) {
+                        for chunk in nd_json::NdJsonChunker::new(path, size, opt.ignore_embeddings) {
                             tx.send(chunk)?;
                         }
                         Ok(()) as anyhow::Result<()>

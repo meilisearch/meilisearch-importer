@@ -13,17 +13,23 @@ pub struct NdJsonChunker {
     pub reader: StreamDeserializer<'static, IoRead<BufReader<Box<dyn Read>>>, Map<String, Value>>,
     pub buffer: Vec<u8>,
     pub size: usize,
+    pub ignore_embeddings: bool,
 }
 
 impl NdJsonChunker {
-    pub fn new(path: PathBuf, size: usize) -> Self {
+    pub fn new(path: PathBuf, size: usize, ignore_embeddings: bool) -> Self {
         let reader = if path == Path::new("-") {
             Box::new(io::stdin()) as Box<dyn Read>
         } else {
             Box::new(File::open(path).unwrap())
         };
         let reader = BufReader::new(reader);
-        Self { reader: Deserializer::from_reader(reader).into_iter(), buffer: Vec::new(), size }
+        Self {
+            reader: Deserializer::from_reader(reader).into_iter(),
+            buffer: Vec::new(),
+            size,
+            ignore_embeddings,
+        }
     }
 }
 
@@ -32,7 +38,11 @@ impl Iterator for NdJsonChunker {
 
     fn next(&mut self) -> Option<Self::Item> {
         for result in self.reader.by_ref() {
-            let object = result.unwrap();
+            let mut object = result.unwrap();
+
+            if self.ignore_embeddings {
+                object.remove("_vectors");
+            }
 
             // Evaluate the size it will take if we serialize it in the buffer
             let mut counter = ByteCount::new();

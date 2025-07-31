@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mime {
     Json,
     NdJson,
