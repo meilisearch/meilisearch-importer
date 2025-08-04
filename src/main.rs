@@ -1,5 +1,7 @@
 use std::io::prelude::*;
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use std::{fs, thread};
 
@@ -9,8 +11,10 @@ use clap::{Parser, ValueEnum};
 use exponential_backoff::Backoff;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use mime::Mime;
+use rayon::iter::{ParallelBridge as _, ParallelIterator};
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use ureq::{Agent, AgentBuilder};
 
 mod byte_count;
@@ -59,6 +63,13 @@ struct Opt {
     /// The size of the batches sent to Meilisearch.
     #[structopt(long, default_value = "20 MiB")]
     batch_size: Byte,
+
+    /// The number of parallel jobs to use when uploading data.
+    ///
+    /// Be careful to make sure your data can be sent in batches and order of the documents doesn't matter.
+    /// Also make sure not to overload the Meilisearch instance with too many jobs.
+    #[structopt(long, default_value = "1")]
+    jobs: NonZero<usize>,
 
     /// The number of batches to skip. Useful when the upload stopped for some reason.
     #[structopt(long)]
@@ -151,10 +162,14 @@ fn main() -> anyhow::Result<()> {
             None => Mime::from_path(&path).context("Could not find the mime type")?,
         };
 
+        let pool = ThreadPoolBuilder::new().num_threads(opt.jobs.get()).build()?;
+
         let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
-        let pb = ProgressBar::new(nb_chunks);
+        let progress_style =
+            ProgressStyle::with_template("{wide_bar} {pos}/{len} [{per_sec}] ({eta})").unwrap();
+        let pb = ProgressBar::new(nb_chunks).with_style(progress_style);
         pb.inc(0);
 
         match mime {
@@ -166,23 +181,64 @@ fn main() -> anyhow::Result<()> {
                 pb.inc(1);
             }
             Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::new(path, size) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    }
-                    pb.inc(1);
-                }
+                thread::scope(|s| {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(100);
+                    let producer_handle = s.spawn(move || {
+                        for chunk in nd_json::NdJsonChunker::new(path, size) {
+                            tx.send(chunk)?;
+                        }
+                        Ok(()) as anyhow::Result<()>
+                    });
+
+                    let sender_handle =
+                        s.spawn(|| send_producer_in_parallel(&opt, &agent, &pb, &pool, &mime, rx));
+
+                    producer_handle.join().unwrap()?;
+                    sender_handle.join().unwrap()?;
+
+                    Ok(()) as anyhow::Result<()>
+                })?;
             }
             Mime::Csv => {
-                for chunk in csv::CsvChunker::new(path, size, opt.csv_delimiter) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    }
-                    pb.inc(1);
-                }
+                thread::scope(|s| {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(100);
+                    let producer_handle = s.spawn(move || {
+                        for chunk in csv::CsvChunker::new(path, size, opt.csv_delimiter) {
+                            tx.send(chunk)?;
+                        }
+                        Ok(()) as anyhow::Result<()>
+                    });
+
+                    let sender_handle =
+                        s.spawn(|| send_producer_in_parallel(&opt, &agent, &pb, &pool, &mime, rx));
+
+                    producer_handle.join().unwrap()?;
+                    sender_handle.join().unwrap()?;
+
+                    Ok(()) as anyhow::Result<()>
+                })?;
             }
         }
     }
 
     Ok(())
+}
+
+fn send_producer_in_parallel(
+    opt: &Opt,
+    agent: &Agent,
+    pb: &ProgressBar,
+    pool: &ThreadPool,
+    mime: &Mime,
+    rx: Receiver<Vec<u8>>,
+) -> anyhow::Result<()> {
+    pool.install(|| {
+        rx.into_iter().par_bridge().try_for_each(|chunk| {
+            if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+            }
+            pb.inc(1);
+            Ok(()) as anyhow::Result<()>
+        })
+    })
 }
