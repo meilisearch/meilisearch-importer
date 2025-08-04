@@ -9,7 +9,7 @@ use clap::{Parser, ValueEnum};
 use exponential_backoff::Backoff;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use mime::Mime;
 use rayon::iter::{ParallelBridge as _, ParallelIterator};
 use ureq::{Agent, AgentBuilder};
@@ -155,7 +155,9 @@ fn main() -> anyhow::Result<()> {
         let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
-        let pb = ProgressBar::new(nb_chunks);
+        let progress_style =
+            ProgressStyle::with_template("{wide_bar} {pos}/{len} [{per_sec}] ({eta})").unwrap();
+        let pb = ProgressBar::new(nb_chunks).with_style(progress_style);
         pb.inc(0);
 
         match mime {
