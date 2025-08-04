@@ -11,6 +11,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use indicatif::ProgressBar;
 use mime::Mime;
+use rayon::iter::{ParallelBridge as _, ParallelIterator};
 use ureq::{Agent, AgentBuilder};
 
 mod byte_count;
@@ -166,12 +167,30 @@ fn main() -> anyhow::Result<()> {
                 pb.inc(1);
             }
             Mime::NdJson => {
-                for chunk in nd_json::NdJsonChunker::new(path, size) {
-                    if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    }
-                    pb.inc(1);
-                }
+                std::thread::scope(|s| {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(100);
+                    let producer_handle = s.spawn(move || {
+                        for chunk in nd_json::NdJsonChunker::new(path, size) {
+                            tx.send(chunk)?;
+                        }
+                        Ok(()) as anyhow::Result<()>
+                    });
+
+                    let sender_handle = s.spawn(|| {
+                        rx.into_iter().par_bridge().try_for_each(|chunk| {
+                            if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                                send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                            }
+                            pb.inc(1);
+                            Ok(()) as anyhow::Result<()>
+                        })
+                    });
+
+                    producer_handle.join().unwrap()?;
+                    sender_handle.join().unwrap()?;
+
+                    Ok(()) as anyhow::Result<()>
+                })?;
             }
             Mime::Csv => {
                 for chunk in csv::CsvChunker::new(path, size, opt.csv_delimiter) {
