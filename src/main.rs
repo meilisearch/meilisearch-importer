@@ -75,6 +75,10 @@ struct Opt {
     #[structopt(long)]
     skip_batches: Option<u64>,
 
+    /// Tells us to read data from stdin and to use the provided format.
+    #[structopt(long, conflicts_with("files"))]
+    stdin: Option<Mime>,
+
     /// The operation to perform when uploading a document.
     #[arg(
         long,
@@ -148,7 +152,10 @@ fn send_data(
 fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
-    let files = opt.files.clone();
+    let files = match opt.stdin {
+        Some(_) => vec![PathBuf::from("-")],
+        None => opt.files.clone(),
+    };
 
     // for each files present in the argument
     for path in files {
@@ -157,9 +164,14 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("The file {:?} does not exist", path);
         }
 
-        let mime = match opt.format {
+        // get the mime type from either the stdin argument, the format argument if provided or from
+        // the extension of the file.
+        let mime = match opt.stdin {
             Some(mime) => mime,
-            None => Mime::from_path(&path).context("Could not find the mime type")?,
+            None => match opt.format {
+                Some(mime) => mime,
+                None => Mime::from_path(&path).context("Could not find the mime type")?,
+            },
         };
 
         let pool = ThreadPoolBuilder::new().num_threads(opt.jobs.get()).build()?;
@@ -167,9 +179,13 @@ fn main() -> anyhow::Result<()> {
         let file_size = if path == Path::new("-") { 0 } else { fs::metadata(&path)?.len() };
         let size = opt.batch_size.as_u64() as usize;
         let nb_chunks = file_size / size as u64;
-        let progress_style =
-            ProgressStyle::with_template("{wide_bar} {pos}/{len} [{per_sec}] ({eta})").unwrap();
-        let pb = ProgressBar::new(nb_chunks).with_style(progress_style);
+        let pb = if file_size > 0 {
+            let progress_style =
+                ProgressStyle::with_template("{wide_bar} {pos}/{len} [{per_sec}] ({eta})").unwrap();
+            ProgressBar::new(nb_chunks).with_style(progress_style)
+        } else {
+            ProgressBar::new_spinner()
+        };
         pb.inc(0);
 
         match mime {
