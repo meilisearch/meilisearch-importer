@@ -16,6 +16,7 @@ use mime::Mime;
 use rayon::iter::{ParallelBridge as _, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use ureq::{Agent, AgentBuilder};
+use serde_json;
 
 mod byte_count;
 mod csv;
@@ -137,15 +138,92 @@ fn send_data(
         }
 
         match request.send_bytes(&data) {
-            Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
+            Ok(response) if matches!(response.status(), 200..=299) => {
+                let resp_body = response.into_string()?;
+                let task_uid: Option<u64> = serde_json::from_str::<serde_json::Value>(&resp_body)
+                    .ok()
+                    .and_then(|v| v["taskUid"].as_u64());
+                if let Some(task_uid) = task_uid {
+                    let task_url = format!("{}/tasks/{}", opt.url, task_uid);
+                    loop {
+                        let mut req = agent.get(&task_url);
+                        if let Some(api_key) = &api_key {
+                            req = req.set("Authorization", &format!("Bearer {}", api_key));
+                        }
+                        match req.call() {
+                            Ok(task_response) => {
+                                let task_json: serde_json::Value = serde_json::from_str(&task_response.into_string()?).unwrap_or_default();
+                                let status = task_json["status"].as_str().unwrap_or("");
+                                if status == "succeeded" {
+                                    if let Some(failed) = task_json["details"]["failedDocuments"].as_u64() {
+                                        if failed > 0 {
+                                            pb.println(format!("⚠️ 批量导入有 {} 条失败，建议降级单条重试或导出失败文档！", failed));
+                                        }
+                                    }
+                                    break;
+                                } else if status == "failed" {
+                                    pb.println(format!("❌ 批量导入任务失败: {:?}", task_json));
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                pb.println(format!("查询任务状态失败: {}，重试...", e));
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                } else {
+                    pb.println("⚠️ 未能解析批量导入任务 taskUid，无法确认导入结果！");
+                }
+                return Ok(());
+            }
             Ok(response) => {
                 let e = response.into_string()?;
-                pb.println(format!("Attempt #{attempt}: {e}"));
+                pb.println(format!("Attempt #{}: {}", attempt, e));
                 thread::sleep(duration);
             }
             Err(e) => {
-                pb.println(format!("Attempt #{attempt}: {e}"));
+                pb.println(format!("Attempt #{}: {}", attempt, e));
                 thread::sleep(duration);
+            }
+        }
+    }
+
+    if let Ok(text) = std::str::from_utf8(&data) {
+        let is_single_json = matches!(mime, crate::mime::Mime::Json) && text.trim_start().starts_with('{');
+        let is_single_ndjson = matches!(mime, crate::mime::Mime::NdJson) && text.lines().count() == 1;
+        if is_single_json || is_single_ndjson {
+            pb.println("Batch failed, trying single-document retry...");
+            let single_doc = if is_single_json {
+                text.as_bytes()
+            } else {
+                text.lines().next().unwrap().as_bytes()
+            };
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(single_doc)?;
+            let single_data = encoder.finish()?;
+            let mut request = match upload_operation {
+                DocumentOperation::AddOrReplace => agent.post(&url),
+                DocumentOperation::AddOrUpdate => agent.put(&url),
+            };
+            request = request.set("Content-Type", mime.as_str());
+            request = request.set("Content-Encoding", "gzip");
+            request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
+            if let Some(api_key) = &api_key {
+                request = request.set("Authorization", &format!("Bearer {}", api_key));
+            }
+            match request.send_bytes(&single_data) {
+                Ok(response) if matches!(response.status(), 200..=299) => {
+                    pb.println("Single-document retry succeeded!");
+                    return Ok(());
+                }
+                Ok(response) => {
+                    let e = response.into_string()?;
+                    pb.println(format!("Single-doc retry failed: {}", e));
+                }
+                Err(e) => {
+                    pb.println(format!("Single-doc retry error: {}", e));
+                }
             }
         }
     }
