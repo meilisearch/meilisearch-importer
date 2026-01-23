@@ -15,7 +15,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use mime::Mime;
 use rayon::iter::{ParallelBridge as _, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use ureq::{agent, Agent, AgentBuilder};
+use ureq::{Agent, AgentBuilder};
 
 mod byte_count;
 mod csv;
@@ -310,7 +310,20 @@ fn send_producer_in_parallel(
                     wait_for_task(&second_opt, &agent, second_task_uid)?;
 
                     for query in queries.lines().map(|s| s.trim()) {
-                        // send search queries for 100 docs to both instances and diff only the hits field (consider it an array of object)
+                        let first_hits =
+                            search_instance(&opt, &agent, query).with_context(|| {
+                                format!("searching first instance with query `{query}`")
+                            })?;
+                        let second_hits = search_instance(&second_opt, &agent, query)
+                            .with_context(|| {
+                                format!("searching second instance with query `{query}`")
+                            })?;
+
+                        if first_hits != second_hits {
+                            use pretty_assertions::Comparison;
+                            println!("{}", Comparison::new(&first_hits, &second_hits));
+                            // TODO stop here with more info
+                        }
                     }
                 }
                 pb.inc(1);
@@ -326,6 +339,33 @@ fn send_producer_in_parallel(
             })
         }
     })
+}
+
+fn search_instance(
+    opt: &Opt,
+    agent: &Agent,
+    query: &str,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    #[derive(Debug, serde::Deserialize)]
+    struct SearchResponse {
+        hits: Vec<serde_json::Value>,
+    }
+
+    let search_payload = serde_json::json!({
+        "q": query,
+        "limit": 100,
+    });
+
+    let url = format!("{}/indexes/{}/search", opt.url, opt.index);
+    let mut request = agent.post(&url);
+    request = request.set("Content-Type", "application/json");
+    request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
+    if let Some(api_key) = &opt.api_key {
+        request = request.set("Authorization", &format!("Bearer {}", api_key));
+    }
+
+    let response: SearchResponse = request.send_json(&search_payload)?.into_json()?;
+    Ok(response.hits)
 }
 
 fn wait_for_task(opt: &Opt, agent: &Agent, task_uid: u32) -> anyhow::Result<()> {
