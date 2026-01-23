@@ -15,7 +15,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use mime::Mime;
 use rayon::iter::{ParallelBridge as _, ParallelIterator};
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use ureq::{Agent, AgentBuilder};
+use ureq::{agent, Agent, AgentBuilder};
 
 mod byte_count;
 mod csv;
@@ -156,12 +156,13 @@ fn send_data(
         match request.send_bytes(&data) {
             Ok(response) if matches!(response.status(), 200..=299) => {
                 #[derive(Debug, serde::Deserialize)]
+                #[serde(rename = "camelCase")]
                 struct Task {
-                    id: u32,
+                    task_uid: u32,
                 }
 
-                let Task { id } = response.into_json()?;
-                return Ok(id);
+                let Task { task_uid } = response.into_json()?;
+                return Ok(task_uid);
             }
             Ok(response) => {
                 let e = response.into_string()?;
@@ -296,8 +297,16 @@ fn send_producer_in_parallel(
         if let Some(second_opt) = second_opt {
             for chunk in rx {
                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                    send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
-                    send_data(&second_opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                    let first_task_uid =
+                        send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                    let second_task_uid =
+                        send_data(&second_opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+
+                    // Only wait once both machines received the tasks
+                    wait_for_task(&opt, &agent, first_task_uid)?;
+                    wait_for_task(&second_opt, &agent, second_task_uid)?;
+
+                    // ...
                 }
                 pb.inc(1);
             }
@@ -314,4 +323,45 @@ fn send_producer_in_parallel(
     })
 }
 
-fn wait_for_task(opt: &Opt, agent: &Agent, task_uid: u32) -> anyhow::Result<()> {}
+fn wait_for_task(opt: &Opt, agent: &Agent, task_uid: u32) -> anyhow::Result<()> {
+    let url = format!("{}/tasks/{}", opt.url, task_uid);
+    let api_key = opt.api_key.clone();
+
+    loop {
+        let mut request = agent.get(&url);
+        request = request.set("X-Meilisearch-Client", "Meilisearch Importer");
+
+        if let Some(api_key) = &api_key {
+            request = request.set("Authorization", &format!("Bearer {}", api_key));
+        }
+
+        let response = request.call()?;
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TaskInfo {
+            status: String,
+            error: Option<serde_json::Value>,
+        }
+
+        let task_info: TaskInfo = response.into_json()?;
+
+        match task_info.status.as_str() {
+            "enqueued" | "processing" => thread::sleep(Duration::from_millis(100)),
+            "succeeded" => {
+                return Ok(());
+            }
+            "failed" => {
+                // Task failed, return the error
+                let error_msg = task_info
+                    .error
+                    .map(|e| format!("Task failed: {}", e))
+                    .unwrap_or_else(|| "Task failed with unknown error".to_string());
+                anyhow::bail!(error_msg);
+            }
+            other => {
+                anyhow::bail!("Unexpected task status: {}", other)
+            }
+        }
+    }
+}
