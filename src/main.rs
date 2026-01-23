@@ -285,16 +285,19 @@ fn send_producer_in_parallel(
     mime: &Mime,
     rx: Receiver<Vec<u8>>,
 ) -> anyhow::Result<()> {
-    let second_opt = if opt.detect_divergences {
+    let second_options = if opt.detect_divergences {
         // TODO do better and increment the original port or error
         let url = String::from("http://localhost:7701");
-        Some(Opt { url, ..opt.clone() })
+        let opt = Opt { url, ..opt.clone() };
+        let queries_string =
+            std::fs::read_to_string("queries.txt").context("opening the queries.txt file")?;
+        Some((opt, queries_string))
     } else {
         None
     };
 
     pool.install(|| {
-        if let Some(second_opt) = second_opt {
+        if let Some((second_opt, queries)) = second_options {
             for chunk in rx {
                 if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
                     let first_task_uid =
@@ -306,7 +309,9 @@ fn send_producer_in_parallel(
                     wait_for_task(&opt, &agent, first_task_uid)?;
                     wait_for_task(&second_opt, &agent, second_task_uid)?;
 
-                    // ...
+                    for query in queries.lines().map(|s| s.trim()) {
+                        // send search queries for 100 docs to both instances and diff only the hits field (consider it an array of object)
+                    }
                 }
                 pb.inc(1);
             }
