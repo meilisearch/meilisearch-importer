@@ -83,6 +83,23 @@ struct Opt {
     #[structopt(long, conflicts_with("files"))]
     stdin: Option<Mime>,
 
+    /// Uses port and port+1 to communicate with two instances and
+    /// use the meilitool output-formatted-entries command to detect
+    /// divergences in between instances.
+    ///
+    /// It stops at the first divergence, shows the diff, the index
+    /// of the document that fails, and the ID of the task.
+    ///
+    /// It is incompatible with --jobs as sending tasks must be determinist
+    /// and sending tasks will be synchronous, waiting for each task to be
+    /// accepted and processed on both sides to perform the diff
+    /// (search results and key-value content).
+    ///
+    /// Note that the search queries to perform on both instances will be read,
+    /// line by line, from the queries.txt file.
+    #[structopt(long, conflicts_with("jobs"))]
+    detect_divergences: bool,
+
     /// The operation to perform when uploading a document.
     #[arg(
         long,
@@ -107,7 +124,7 @@ fn send_data(
     pb: &ProgressBar,
     mime: &Mime,
     data: &[u8],
-) -> anyhow::Result<()> {
+) -> anyhow::Result<u32> {
     let api_key = opt.api_key.clone();
     let mut url = format!("{}/indexes/{}/documents", opt.url, opt.index);
     if let Some(primary_key) = &opt.primary_key {
@@ -137,7 +154,15 @@ fn send_data(
         }
 
         match request.send_bytes(&data) {
-            Ok(response) if matches!(response.status(), 200..=299) => return Ok(()),
+            Ok(response) if matches!(response.status(), 200..=299) => {
+                #[derive(Debug, serde::Deserialize)]
+                struct Task {
+                    id: u32,
+                }
+
+                let Task { id } = response.into_json()?;
+                return Ok(id);
+            }
             Ok(response) => {
                 let e = response.into_string()?;
                 pb.println(format!("Attempt #{attempt}: {e}"));
@@ -168,8 +193,8 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("The file {:?} does not exist", path);
         }
 
-        // get the mime type from either the stdin argument, the format argument if provided or from
-        // the extension of the file.
+        // get the mime type from either the stdin argument, the format
+        // argument if provided or from the extension of the file.
         let mime = match opt.stdin {
             Some(mime) => mime,
             None => match opt.format {
@@ -192,7 +217,9 @@ fn main() -> anyhow::Result<()> {
                 ProgressStyle::with_template("{wide_bar} {pos}/{len} [{per_sec}] ({eta})").unwrap();
             ProgressBar::new(nb_chunks).with_style(progress_style)
         } else {
-            ProgressBar::new_spinner()
+            let progress_style =
+                ProgressStyle::with_template("{pos}/??? [{per_sec}] ({elapsed})").unwrap();
+            ProgressBar::new_spinner().with_style(progress_style)
         };
         pb.inc(0);
 
@@ -208,7 +235,8 @@ fn main() -> anyhow::Result<()> {
                 thread::scope(|s| {
                     let (tx, rx) = std::sync::mpsc::sync_channel(100);
                     let producer_handle = s.spawn(move || {
-                        for chunk in nd_json::NdJsonChunker::new(path, size, opt.ignore_embeddings) {
+                        for chunk in nd_json::NdJsonChunker::new(path, size, opt.ignore_embeddings)
+                        {
                             tx.send(chunk)?;
                         }
                         Ok(()) as anyhow::Result<()>
@@ -256,13 +284,34 @@ fn send_producer_in_parallel(
     mime: &Mime,
     rx: Receiver<Vec<u8>>,
 ) -> anyhow::Result<()> {
+    let second_opt = if opt.detect_divergences {
+        // TODO do better and increment the original port or error
+        let url = String::from("http://localhost:7701");
+        Some(Opt { url, ..opt.clone() })
+    } else {
+        None
+    };
+
     pool.install(|| {
-        rx.into_iter().par_bridge().try_for_each(|chunk| {
-            if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
-                send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+        if let Some(second_opt) = second_opt {
+            for chunk in rx {
+                if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                    send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                    send_data(&second_opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                }
+                pb.inc(1);
             }
-            pb.inc(1);
-            Ok(()) as anyhow::Result<()>
-        })
+            Ok(())
+        } else {
+            rx.into_iter().par_bridge().try_for_each(|chunk| {
+                if opt.skip_batches.zip(pb.length()).map_or(true, |(s, l)| s > l) {
+                    send_data(&opt, &agent, opt.upload_operation, &pb, &mime, &chunk)?;
+                }
+                pb.inc(1);
+                Ok(())
+            })
+        }
     })
 }
+
+fn wait_for_task(opt: &Opt, agent: &Agent, task_uid: u32) -> anyhow::Result<()> {}
