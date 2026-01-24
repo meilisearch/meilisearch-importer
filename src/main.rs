@@ -310,12 +310,11 @@ fn send_producer_in_parallel(
                     wait_for_task(&second_opt, &agent, second_task_uid)?;
 
                     for query in queries.lines().map(|s| s.trim()) {
-                        let first_hits =
-                            search_instance(&opt, &agent, query).with_context(|| {
-                                format!("searching first instance with query `{query}`")
-                            })?;
-                        let second_hits = search_instance(&second_opt, &agent, query)
-                            .with_context(|| {
+                        let first_hits = search_instance(opt, agent, query).with_context(|| {
+                            format!("searching first instance with query `{query}`")
+                        })?;
+                        let second_hits =
+                            search_instance(&second_opt, agent, query).with_context(|| {
                                 format!("searching second instance with query `{query}`")
                             })?;
 
@@ -324,6 +323,15 @@ fn send_producer_in_parallel(
                             println!("{}", Comparison::new(&first_hits, &second_hits));
                             // TODO stop here with more info
                         }
+
+                        let first_output_stream = formatted_db_output(opt, "data.ms", agent)
+                            .context("formatting the second database content")?;
+                        let second_output_stream =
+                            formatted_db_output(&second_opt, "data1.ms", agent)
+                                .context("formatting the second database content")?;
+
+                        // TODO give the two named pipes to the diff command to show the diff between the two databases
+                        //      Check the error code of the diff command and stop if it is an error (let a TODO comment there, like I did above).
                     }
                 }
                 pb.inc(1);
@@ -339,6 +347,19 @@ fn send_producer_in_parallel(
             })
         }
     })
+}
+
+/// Outputs the path of a named pipe with the output of the meilitool
+/// output-formatted-entries command.
+fn formatted_db_output(
+    opt: &Opt,
+    db_path: impl AsRef<Path>,
+    agent: &Agent,
+) -> anyhow::Result<PathBuf> {
+    // TODO run:
+    //   meilitool --db-path $db_path output-formatted-entries --index-name $opt.index
+    // and pipe it into a named pipe file
+    todo!()
 }
 
 fn search_instance(
