@@ -309,6 +309,9 @@ fn send_producer_in_parallel(
                     wait_for_task(&opt, &agent, first_task_uid)?;
                     wait_for_task(&second_opt, &agent, second_task_uid)?;
 
+                    let mut has_search_divergence = false;
+                    let mut has_database_divergence = false;
+
                     for query in queries.lines().map(|s| s.trim()) {
                         let first_hits = search_instance(opt, agent, query).with_context(|| {
                             format!("searching first instance with query `{query}`")
@@ -320,17 +323,33 @@ fn send_producer_in_parallel(
 
                         if first_hits != second_hits {
                             use pretty_assertions::Comparison;
+                            println!("=== SEARCH RESULTS DIVERGENCE for query '{}' ===", query);
                             println!("{}", Comparison::new(&first_hits, &second_hits));
-                            // TODO stop here with more info
+                            has_search_divergence = true;
                         }
+                    }
 
-                        let first_output_stream = formatted_db_output(opt, "data.ms", "first.fifo")
-                            .context("formatting the first database content")?;
-                        let second_output_stream =
-                            formatted_db_output(&second_opt, "data1.ms", "second.fifo")
-                                .context("formatting the second database content")?;
+                    let first_output_stream = formatted_db_output(opt, "data.ms", "first.fifo")
+                        .context("formatting the first database content")?;
+                    let second_output_stream =
+                        formatted_db_output(&second_opt, "data1.ms", "second.fifo")
+                            .context("formatting the second database content")?;
 
-                        diff_databases(&first_output_stream, &second_output_stream)?;
+                    if let Err(e) = diff_databases(&first_output_stream, &second_output_stream) {
+                        println!("=== DATABASE CONTENT DIVERGENCE ===");
+                        println!("{:?}", e);
+                        has_database_divergence = true;
+                    }
+
+                    if has_search_divergence || has_database_divergence {
+                        let mut error_parts = Vec::new();
+                        if has_search_divergence {
+                            error_parts.push("search results");
+                        }
+                        if has_database_divergence {
+                            error_parts.push("database content");
+                        }
+                        anyhow::bail!("Divergence detected in: {}", error_parts.join(" and "));
                     }
                 }
                 pb.inc(1);
@@ -426,7 +445,7 @@ fn diff_databases(first_path: &Path, second_path: &Path) -> anyhow::Result<()> {
         if code >= 2 {
             anyhow::bail!("diff command failed with exit code {}", code);
         } else if code == 1 {
-            anyhow::bail!("Databases diverge: differences found between the two databases");
+            anyhow::bail!("Database content divergence: differences found in the raw database content between both instances");
         }
     } else {
         anyhow::bail!("diff command was terminated by signal");
