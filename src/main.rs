@@ -324,10 +324,10 @@ fn send_producer_in_parallel(
                             // TODO stop here with more info
                         }
 
-                        let first_output_stream = formatted_db_output(opt, "data.ms", agent)
-                            .context("formatting the second database content")?;
+                        let first_output_stream = formatted_db_output(opt, "data.ms", "first.fifo")
+                            .context("formatting the first database content")?;
                         let second_output_stream =
-                            formatted_db_output(&second_opt, "data1.ms", agent)
+                            formatted_db_output(&second_opt, "data1.ms", "second.fifo")
                                 .context("formatting the second database content")?;
 
                         // TODO give the two named pipes to the diff command to show the diff between the two databases
@@ -354,12 +354,61 @@ fn send_producer_in_parallel(
 fn formatted_db_output(
     opt: &Opt,
     db_path: impl AsRef<Path>,
-    agent: &Agent,
+    pipe_name: &str,
 ) -> anyhow::Result<PathBuf> {
-    // TODO run:
-    //   meilitool --db-path $db_path output-formatted-entries --index-name $opt.index
-    // and pipe it into a named pipe file
-    todo!()
+    use std::process::{Command, Stdio};
+
+    // Create a fixed named pipe (FIFO) with a specific name
+    let pipe_path = PathBuf::from(pipe_name);
+
+    // Remove the pipe if it already exists
+    if pipe_path.exists() {
+        fs::remove_file(&pipe_path).context("Failed to remove existing pipe")?;
+    }
+
+    // Create the named pipe using mkfifo
+    let mkfifo_status = Command::new("mkfifo")
+        .arg(&pipe_path)
+        .status()
+        .context("Failed to create named pipe with mkfifo")?;
+
+    if !mkfifo_status.success() {
+        anyhow::bail!("mkfifo command failed");
+    }
+
+    // Spawn meilitool command in the background, redirecting output to the named pipe
+    let db_path_str =
+        db_path.as_ref().to_str().context("Failed to convert db_path to string")?.to_string();
+    let index_name = opt.index.clone();
+    let pipe_path_clone = pipe_path.clone();
+
+    std::thread::spawn(move || {
+        let output = Command::new("meilitool")
+            .arg("--db-path")
+            .arg(&db_path_str)
+            .arg("output-formatted-entries")
+            .arg("--index-name")
+            .arg(&index_name)
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(stdout) = child.stdout.take() {
+                    let pipe_file =
+                        std::fs::OpenOptions::new().write(true).open(&pipe_path_clone)?;
+                    std::io::copy(
+                        &mut std::io::BufReader::new(stdout),
+                        &mut std::io::BufWriter::new(pipe_file),
+                    )?;
+                }
+                child.wait()
+            });
+
+        if let Err(e) = output {
+            eprintln!("Error running meilitool: {}", e);
+        }
+    });
+
+    Ok(pipe_path)
 }
 
 fn search_instance(
