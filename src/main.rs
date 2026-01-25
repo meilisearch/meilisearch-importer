@@ -330,8 +330,7 @@ fn send_producer_in_parallel(
                             formatted_db_output(&second_opt, "data1.ms", "second.fifo")
                                 .context("formatting the second database content")?;
 
-                        // TODO give the two named pipes to the diff command to show the diff between the two databases
-                        //      Check the error code of the diff command and stop if it is an error (let a TODO comment there, like I did above).
+                        diff_databases(&first_output_stream, &second_output_stream)?;
                     }
                 }
                 pb.inc(1);
@@ -409,6 +408,31 @@ fn formatted_db_output(
     });
 
     Ok(pipe_path)
+}
+
+fn diff_databases(first_path: &Path, second_path: &Path) -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+
+    let status = Command::new("diff")
+        .arg(first_path)
+        .arg(second_path)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("Failed to execute diff command")?;
+
+    // diff returns 0 if files are identical, 1 if different, 2+ for errors
+    if let Some(code) = status.code() {
+        if code >= 2 {
+            anyhow::bail!("diff command failed with exit code {}", code);
+        } else if code == 1 {
+            anyhow::bail!("Databases diverge: differences found between the two databases");
+        }
+    } else {
+        anyhow::bail!("diff command was terminated by signal");
+    }
+
+    Ok(())
 }
 
 fn search_instance(
