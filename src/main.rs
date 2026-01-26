@@ -331,11 +331,21 @@ fn send_producer_in_parallel(
                         }
                     }
 
-                    let first_output_stream = formatted_db_output(opt, "data.ms", "first.fifo")
-                        .context("formatting the first database content")?;
-                    let second_output_stream =
-                        formatted_db_output(&second_opt, "data1.ms", "second.fifo")
-                            .context("formatting the second database content")?;
+                    // Run both meilitool commands in parallel
+                    let (first_result, second_result) = thread::scope(|s| {
+                        let first_handle = s.spawn(|| {
+                            formatted_db_output(opt, "data.ms", "first.gz")
+                                .context("formatting the first database content")
+                        });
+                        let second_handle = s.spawn(|| {
+                            formatted_db_output(&second_opt, "data1.ms", "second.gz")
+                                .context("formatting the second database content")
+                        });
+                        (first_handle.join().unwrap(), second_handle.join().unwrap())
+                    });
+
+                    let first_output_stream = first_result?;
+                    let second_output_stream = second_result?;
 
                     if let Err(e) = diff_databases(&first_output_stream, &second_output_stream) {
                         println!("=== DATABASE CONTENT DIVERGENCE ===");
@@ -369,88 +379,77 @@ fn send_producer_in_parallel(
     })
 }
 
-/// Outputs the path of a named pipe with the output of the meilitool
-/// output-formatted-entries command.
+/// Runs meilitool and outputs gzip-compressed formatted entries to a file.
 fn formatted_db_output(
     opt: &Opt,
     db_path: impl AsRef<Path>,
-    pipe_name: &str,
+    output_filename: &str,
 ) -> anyhow::Result<PathBuf> {
     use std::process::{Command, Stdio};
 
-    // Create a fixed named pipe (FIFO) with a specific name
-    let pipe_path = PathBuf::from(pipe_name);
+    let output_path = PathBuf::from(output_filename);
 
-    // Remove the pipe if it already exists
-    if pipe_path.exists() {
-        fs::remove_file(&pipe_path).context("Failed to remove existing pipe")?;
+    // Remove the file if it already exists
+    if output_path.exists() {
+        fs::remove_file(&output_path).context("Failed to remove existing output file")?;
     }
 
-    // Create the named pipe using mkfifo
-    let mkfifo_status = Command::new("mkfifo")
-        .arg(&pipe_path)
-        .status()
-        .context("Failed to create named pipe with mkfifo")?;
+    let db_path_str = db_path.as_ref().to_str().context("Failed to convert db_path to string")?;
 
-    if !mkfifo_status.success() {
-        anyhow::bail!("mkfifo command failed");
+    // Run meilitool and pipe output through gzip
+    let mut meilitool_child = Command::new("meilitool")
+        .arg("--db-path")
+        .arg(db_path_str)
+        .arg("output-formatted-entries")
+        .arg("--index-name")
+        .arg(&opt.index)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn meilitool command")?;
+
+    let meilitool_stdout =
+        meilitool_child.stdout.take().context("Failed to capture meilitool stdout")?;
+
+    // Create output file and gzip encoder
+    let output_file = fs::File::create(&output_path).context("Failed to create output file")?;
+    let mut encoder = GzEncoder::new(output_file, Compression::default());
+
+    // Copy meilitool output through gzip encoder to file
+    std::io::copy(&mut std::io::BufReader::new(meilitool_stdout), &mut encoder)
+        .context("Failed to write compressed output")?;
+
+    encoder.finish().context("Failed to finish gzip compression")?;
+
+    // Wait for meilitool to complete
+    let status = meilitool_child.wait().context("Failed to wait for meilitool")?;
+
+    if !status.success() {
+        anyhow::bail!("meilitool command failed with status: {}", status);
     }
 
-    // Spawn meilitool command in the background, redirecting output to the named pipe
-    let db_path_str =
-        db_path.as_ref().to_str().context("Failed to convert db_path to string")?.to_string();
-    let index_name = opt.index.clone();
-    let pipe_path_clone = pipe_path.clone();
-
-    std::thread::spawn(move || {
-        let output = Command::new("meilitool")
-            .arg("--db-path")
-            .arg(&db_path_str)
-            .arg("output-formatted-entries")
-            .arg("--index-name")
-            .arg(&index_name)
-            .stdout(Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                if let Some(stdout) = child.stdout.take() {
-                    let pipe_file =
-                        std::fs::OpenOptions::new().write(true).open(&pipe_path_clone)?;
-                    std::io::copy(
-                        &mut std::io::BufReader::new(stdout),
-                        &mut std::io::BufWriter::new(pipe_file),
-                    )?;
-                }
-                child.wait()
-            });
-
-        if let Err(e) = output {
-            eprintln!("Error running meilitool: {}", e);
-        }
-    });
-
-    Ok(pipe_path)
+    Ok(output_path)
 }
 
 fn diff_databases(first_path: &Path, second_path: &Path) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
 
-    let status = Command::new("diff")
+    let status = Command::new("zdiff")
         .arg(first_path)
         .arg(second_path)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .context("Failed to execute diff command")?;
+        .context("Failed to execute zdiff command")?;
 
-    // diff returns 0 if files are identical, 1 if different, 2+ for errors
+    // zdiff returns 0 if files are identical, 1 if different, 2+ for errors
     if let Some(code) = status.code() {
         if code >= 2 {
-            anyhow::bail!("diff command failed with exit code {}", code);
+            anyhow::bail!("zdiff command failed with exit code {code}");
         } else if code == 1 {
             anyhow::bail!("Database content divergence: differences found in the raw database content between both instances");
         }
     } else {
-        anyhow::bail!("diff command was terminated by signal");
+        anyhow::bail!("zdiff command was terminated by signal");
     }
 
     Ok(())
@@ -508,9 +507,7 @@ fn wait_for_task(opt: &Opt, agent: &Agent, task_uid: u32) -> anyhow::Result<()> 
 
         match task_info.status.as_str() {
             "enqueued" | "processing" => thread::sleep(Duration::from_millis(100)),
-            "succeeded" => {
-                return Ok(());
-            }
+            "succeeded" => return Ok(()),
             "failed" => {
                 // Task failed, return the error
                 let error_msg = task_info
