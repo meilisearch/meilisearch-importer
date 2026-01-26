@@ -156,7 +156,7 @@ fn send_data(
         match request.send_bytes(&data) {
             Ok(response) if matches!(response.status(), 200..=299) => {
                 #[derive(Debug, serde::Deserialize)]
-                #[serde(rename = "camelCase")]
+                #[serde(rename_all = "camelCase")]
                 struct Task {
                     task_uid: u32,
                 }
