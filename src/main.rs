@@ -331,23 +331,10 @@ fn send_producer_in_parallel(
                         }
                     }
 
-                    // Run both meilitool commands in parallel
-                    let (first_result, second_result) = thread::scope(|s| {
-                        let first_handle = s.spawn(|| {
-                            formatted_db_output(opt, "data.ms", "first.gz")
-                                .context("formatting the first database content")
-                        });
-                        let second_handle = s.spawn(|| {
-                            formatted_db_output(&second_opt, "data1.ms", "second.gz")
-                                .context("formatting the second database content")
-                        });
-                        (first_handle.join().unwrap(), second_handle.join().unwrap())
-                    });
-
-                    let first_output_stream = first_result?;
-                    let second_output_stream = second_result?;
-
-                    if let Err(e) = diff_databases(&first_output_stream, &second_output_stream) {
+                    // Diff both databases by piping meilitool outputs directly to diff
+                    if let Err(e) =
+                        diff_databases_streaming(opt, &second_opt, "data.ms", "data1.ms")
+                    {
                         println!("=== DATABASE CONTENT DIVERGENCE ===");
                         println!("{:?}", e);
                         has_database_divergence = true;
@@ -379,77 +366,115 @@ fn send_producer_in_parallel(
     })
 }
 
-/// Runs meilitool and outputs gzip-compressed formatted entries to a file.
-fn formatted_db_output(
-    opt: &Opt,
-    db_path: impl AsRef<Path>,
-    output_filename: &str,
-) -> anyhow::Result<PathBuf> {
+/// Diffs two databases by piping meilitool outputs and comparing line-by-line in Rust.
+/// This runs both meilitool processes in parallel and shows differences using pretty_assertions.
+fn diff_databases_streaming(
+    first_opt: &Opt,
+    second_opt: &Opt,
+    first_db_path: &str,
+    second_db_path: &str,
+) -> anyhow::Result<()> {
+    use std::io::BufRead;
     use std::process::{Command, Stdio};
 
-    let output_path = PathBuf::from(output_filename);
-
-    // Remove the file if it already exists
-    if output_path.exists() {
-        fs::remove_file(&output_path).context("Failed to remove existing output file")?;
-    }
-
-    let db_path_str = db_path.as_ref().to_str().context("Failed to convert db_path to string")?;
-
-    // Run meilitool and pipe output through gzip
-    let mut meilitool_child = Command::new("meilitool")
+    // Spawn first meilitool process
+    let mut first_meilitool = Command::new("meilitool")
         .arg("--db-path")
-        .arg(db_path_str)
+        .arg(first_db_path)
         .arg("output-formatted-entries")
         .arg("--index-name")
-        .arg(&opt.index)
+        .arg(&first_opt.index)
         .stdout(Stdio::piped())
         .spawn()
-        .context("Failed to spawn meilitool command")?;
+        .context("Failed to spawn first meilitool")?;
 
-    let meilitool_stdout =
-        meilitool_child.stdout.take().context("Failed to capture meilitool stdout")?;
+    let first_stdout =
+        first_meilitool.stdout.take().context("Failed to capture first meilitool stdout")?;
 
-    // Create output file and gzip encoder
-    let output_file = fs::File::create(&output_path).context("Failed to create output file")?;
-    let mut encoder = GzEncoder::new(output_file, Compression::default());
+    // Spawn second meilitool process
+    let mut second_meilitool = Command::new("meilitool")
+        .arg("--db-path")
+        .arg(second_db_path)
+        .arg("output-formatted-entries")
+        .arg("--index-name")
+        .arg(&second_opt.index)
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn second meilitool")?;
 
-    // Copy meilitool output through gzip encoder to file
-    std::io::copy(&mut std::io::BufReader::new(meilitool_stdout), &mut encoder)
-        .context("Failed to write compressed output")?;
+    let second_stdout =
+        second_meilitool.stdout.take().context("Failed to capture second meilitool stdout")?;
 
-    encoder.finish().context("Failed to finish gzip compression")?;
+    // Read and compare line by line without collecting everything in memory
+    let mut first_reader = std::io::BufReader::new(first_stdout);
+    let mut second_reader = std::io::BufReader::new(second_stdout);
 
-    // Wait for meilitool to complete
-    let status = meilitool_child.wait().context("Failed to wait for meilitool")?;
+    let mut first_line = String::new();
+    let mut second_line = String::new();
+    let mut line_number = 0;
+    let mut has_divergence = false;
 
-    if !status.success() {
-        anyhow::bail!("meilitool command failed with status: {}", status);
+    loop {
+        first_line.clear();
+        second_line.clear();
+
+        let first_bytes = first_reader.read_line(&mut first_line)?;
+        let second_bytes = second_reader.read_line(&mut second_line)?;
+
+        line_number += 1;
+
+        // Check if both reached EOF
+        if first_bytes == 0 && second_bytes == 0 {
+            break;
+        }
+
+        // Check if one ended before the other
+        if first_bytes == 0 {
+            println!("=== DATABASE CONTENT DIVERGENCE ===");
+            println!(
+                "First database ended at line {}, but second database has more content",
+                line_number - 1
+            );
+            println!("Next line from second database: {}", second_line.trim());
+            has_divergence = true;
+            break;
+        }
+        if second_bytes == 0 {
+            println!("=== DATABASE CONTENT DIVERGENCE ===");
+            println!(
+                "Second database ended at line {}, but first database has more content",
+                line_number - 1
+            );
+            println!("Next line from first database: {}", first_line.trim());
+            has_divergence = true;
+            break;
+        }
+
+        // Compare lines
+        if first_line != second_line {
+            println!("=== DATABASE CONTENT DIVERGENCE at line {} ===", line_number);
+            use pretty_assertions::Comparison;
+            println!("{}", Comparison::new(&first_line, &second_line));
+            has_divergence = true;
+            break;
+        }
     }
 
-    Ok(output_path)
-}
+    // Wait for meilitool processes to complete
+    let first_status = first_meilitool.wait().context("Failed to wait for first meilitool")?;
+    let second_status = second_meilitool.wait().context("Failed to wait for second meilitool")?;
 
-fn diff_databases(first_path: &Path, second_path: &Path) -> anyhow::Result<()> {
-    use std::process::{Command, Stdio};
+    if !first_status.success() {
+        anyhow::bail!("First meilitool command failed with status: {}", first_status);
+    }
+    if !second_status.success() {
+        anyhow::bail!("Second meilitool command failed with status: {}", second_status);
+    }
 
-    let status = Command::new("zdiff")
-        .arg(first_path)
-        .arg(second_path)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("Failed to execute zdiff command")?;
-
-    // zdiff returns 0 if files are identical, 1 if different, 2+ for errors
-    if let Some(code) = status.code() {
-        if code >= 2 {
-            anyhow::bail!("zdiff command failed with exit code {code}");
-        } else if code == 1 {
-            anyhow::bail!("Database content divergence: differences found in the raw database content between both instances");
-        }
-    } else {
-        anyhow::bail!("zdiff command was terminated by signal");
+    if has_divergence {
+        anyhow::bail!(
+            "Database content divergence: differences found in the raw database content between both instances"
+        );
     }
 
     Ok(())
