@@ -238,7 +238,7 @@ fn main() -> anyhow::Result<()> {
                     let producer_handle = s.spawn(move || {
                         for chunk in nd_json::NdJsonChunker::new(path, size, opt.ignore_embeddings)
                         {
-                            tx.send(chunk)?;
+                            tx.send(chunk).context("while sending chunks")?;
                         }
                         Ok(()) as anyhow::Result<()>
                     });
@@ -246,8 +246,8 @@ fn main() -> anyhow::Result<()> {
                     let sender_handle =
                         s.spawn(|| send_producer_in_parallel(&opt, &agent, &pb, &pool, &mime, rx));
 
-                    producer_handle.join().unwrap()?;
                     sender_handle.join().unwrap()?;
+                    producer_handle.join().unwrap()?;
 
                     Ok(()) as anyhow::Result<()>
                 })?;
@@ -257,7 +257,7 @@ fn main() -> anyhow::Result<()> {
                     let (tx, rx) = std::sync::mpsc::sync_channel(100);
                     let producer_handle = s.spawn(move || {
                         for chunk in csv::CsvChunker::new(path, size, opt.csv_delimiter) {
-                            tx.send(chunk)?;
+                            tx.send(chunk).context("while sending chunks")?;
                         }
                         Ok(()) as anyhow::Result<()>
                     });
@@ -265,8 +265,8 @@ fn main() -> anyhow::Result<()> {
                     let sender_handle =
                         s.spawn(|| send_producer_in_parallel(&opt, &agent, &pb, &pool, &mime, rx));
 
-                    producer_handle.join().unwrap()?;
                     sender_handle.join().unwrap()?;
+                    producer_handle.join().unwrap()?;
 
                     Ok(()) as anyhow::Result<()>
                 })?;
@@ -289,8 +289,10 @@ fn send_producer_in_parallel(
         // TODO do better and increment the original port or error
         let url = String::from("http://localhost:7701");
         let opt = Opt { url, ..opt.clone() };
-        let queries_string =
-            std::fs::read_to_string("queries.txt").context("opening the queries.txt file")?;
+        let queries_string = std::fs::read_to_string("queries.txt").context(
+            "opening the queries.txt file - this file is required when using --detect-divergences. \
+             Create a queries.txt file with one search query per line in the current directory."
+        )?;
         Some((opt, queries_string))
     } else {
         None
