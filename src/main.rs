@@ -332,9 +332,7 @@ fn send_producer_in_parallel(
                     }
 
                     // Diff both databases by piping meilitool outputs directly to diff
-                    if let Err(e) =
-                        diff_databases_streaming(opt, &second_opt, "data.ms", "data1.ms")
-                    {
+                    if let Err(e) = diff_databases(opt, "data.ms", "data1.ms") {
                         println!("=== DATABASE CONTENT DIVERGENCE ===");
                         println!("{:?}", e);
                         has_database_divergence = true;
@@ -366,114 +364,33 @@ fn send_producer_in_parallel(
     })
 }
 
-/// Diffs two databases by piping meilitool outputs and comparing line-by-line in Rust.
-/// This runs both meilitool processes in parallel and shows differences using pretty_assertions.
-fn diff_databases_streaming(
+/// Diffs two databases and indexes.
+fn diff_databases(
     first_opt: &Opt,
-    second_opt: &Opt,
     first_db_path: &str,
     second_db_path: &str,
 ) -> anyhow::Result<()> {
-    use std::io::BufRead;
     use std::process::{Command, Stdio};
 
-    // Spawn first meilitool process
-    let mut first_meilitool = Command::new("meilitool")
-        .arg("--db-path")
-        .arg(first_db_path)
-        .arg("output-formatted-entries")
-        .arg("--index-name")
-        .arg(&first_opt.index)
-        .stdout(Stdio::piped())
+    let first_meilitool = Command::new("meilitool")
+        .args(["--db-path", first_db_path])
+        .arg("compare-entries")
+        .args(["--other-db-path", second_db_path])
+        .args(["--index-name", &first_opt.index])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::inherit())
         .spawn()
-        .context("Failed to spawn first meilitool")?;
+        .context("Failed to spawn meilitool command")?;
 
-    let first_stdout =
-        first_meilitool.stdout.take().context("Failed to capture first meilitool stdout")?;
+    let output =
+        first_meilitool.wait_with_output().context("Failed to wait for meilitool command")?;
 
-    // Spawn second meilitool process
-    let mut second_meilitool = Command::new("meilitool")
-        .arg("--db-path")
-        .arg(second_db_path)
-        .arg("output-formatted-entries")
-        .arg("--index-name")
-        .arg(&second_opt.index)
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn second meilitool")?;
-
-    let second_stdout =
-        second_meilitool.stdout.take().context("Failed to capture second meilitool stdout")?;
-
-    // Read and compare line by line without collecting everything in memory
-    let mut first_reader = std::io::BufReader::new(first_stdout);
-    let mut second_reader = std::io::BufReader::new(second_stdout);
-
-    let mut first_line = String::new();
-    let mut second_line = String::new();
-    let mut line_number = 0;
-    let mut has_divergence = false;
-
-    loop {
-        first_line.clear();
-        second_line.clear();
-
-        let first_bytes = first_reader.read_line(&mut first_line)?;
-        let second_bytes = second_reader.read_line(&mut second_line)?;
-
-        line_number += 1;
-
-        // Check if both reached EOF
-        if first_bytes == 0 && second_bytes == 0 {
-            break;
-        }
-
-        // Check if one ended before the other
-        if first_bytes == 0 {
-            println!("=== DATABASE CONTENT DIVERGENCE ===");
-            println!(
-                "First database ended at line {}, but second database has more content",
-                line_number - 1
-            );
-            println!("Next line from second database: {}", second_line.trim());
-            has_divergence = true;
-            break;
-        }
-        if second_bytes == 0 {
-            println!("=== DATABASE CONTENT DIVERGENCE ===");
-            println!(
-                "Second database ended at line {}, but first database has more content",
-                line_number - 1
-            );
-            println!("Next line from first database: {}", first_line.trim());
-            has_divergence = true;
-            break;
-        }
-
-        // Compare lines
-        if first_line != second_line {
-            println!("=== DATABASE CONTENT DIVERGENCE at line {} ===", line_number);
-            use pretty_assertions::Comparison;
-            println!("{}", Comparison::new(&first_line, &second_line));
-            has_divergence = true;
-            break;
-        }
-    }
-
-    // Wait for meilitool processes to complete
-    let first_status = first_meilitool.wait().context("Failed to wait for first meilitool")?;
-    let second_status = second_meilitool.wait().context("Failed to wait for second meilitool")?;
-
-    if !first_status.success() {
-        anyhow::bail!("First meilitool command failed with status: {}", first_status);
-    }
-    if !second_status.success() {
-        anyhow::bail!("Second meilitool command failed with status: {}", second_status);
-    }
-
-    if has_divergence {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
-            "Database content divergence: differences found in the raw database content between both instances"
+            "meilitool command failed with exit code {:?}\nstderr: {}",
+            output.status.code(),
+            stderr
         );
     }
 
